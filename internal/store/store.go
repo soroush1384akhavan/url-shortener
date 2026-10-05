@@ -1,32 +1,68 @@
 package store
 
 import (
+	"sync"
+
 	"github.com/soroush1384akhavan/url-shortener/internal/link"
 )
 
 type MemoryStore struct {
-	codeurl map[string]string
-	urlCode map[string]string
+	codeLink map[string]*link.ShortLink
+	urlLink map[string]*link.ShortLink
+	mu      sync.RWMutex
+}
+
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{
+		codeLink: make(map[string]*link.ShortLink),
+		urlLink:  make(map[string]*link.ShortLink),
+	}
 }
 
 func (s *MemoryStore) FindByURL(normalizedURL string) (*link.ShortLink, bool) {
-	code, ok := s.urlCode[normalizedURL]
+	s.mu.RLock()
+	lnk, ok := s.urlLink[normalizedURL]
+	s.mu.RUnlock()
 
-	var lnk *link.ShortLink // if its not ok is nill ? yep
-	if ok {
-		lnk = link.NewShortLink(code, normalizedURL) // its not correct but just for now (because of data its make a new link! and thats bad!)
+	if !ok {
+		return nil, false
 	}
 
 	return lnk, ok
 }
 
 func (s *MemoryStore) FindByCode(code string) (*link.ShortLink, bool) {
-	URL, ok := s.codeurl[code]
+	s.mu.RLock()
+	lnk, ok := s.codeLink[code]
+	s.mu.RUnlock()
 
-	var lnk *link.ShortLink
-	if ok {
-		lnk = link.NewShortLink(code, URL) // its not correct but just for now (because of data its make a new link! and thats bad!)
+	if !ok {
+		return nil, false
 	}
 
 	return lnk, ok
+}
+
+func (s *MemoryStore) SaveIfNotExist(shortLink *link.ShortLink) (*link.ShortLink, error) { // between check and save we dont have any lock so its have to be atomic
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if lnk, ok := s.urlLink[shortLink.LongURL]; ok {
+		return lnk, nil
+	}
+
+	s.codeLink[shortLink.Code] = shortLink
+	s.urlLink[shortLink.LongURL] = shortLink
+	return shortLink, nil
+}
+
+// im not sure im going to use this or not (Probably not)
+func (s *MemoryStore) Save(shortLink *link.ShortLink) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.codeLink[shortLink.Code] = shortLink
+	s.urlLink[shortLink.LongURL] = shortLink
+
+	return nil
 }

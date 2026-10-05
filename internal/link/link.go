@@ -9,6 +9,7 @@ type ShortLink struct {
 	Code      string
 	LongURL   string
 	CreatedAt time.Time
+	// UsedCount int //maybe it will burn database for a simple read ??!
 }
 
 func NewShortLink(code, longURL string) *ShortLink {

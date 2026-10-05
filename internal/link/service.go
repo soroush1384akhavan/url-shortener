@@ -2,22 +2,23 @@ package link
 
 import (
 
-
 	// "github.com/soroush1384akhavan/url-shortener/internal/store"
-	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
 
+	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
 )
 
 type ShortenerService struct {
 	Validator Validator
-	Store Store
+	Store     Store
+	Generator shortcode.Generator
 }
 
-func NewShortenerService(validator Validator, st Store) (*ShortenerService, error) {
+func NewShortenerService(vld Validator, st Store, gn shortcode.Generator) *ShortenerService {
 	return &ShortenerService{
-		Validator: validator,
-		Store: st,
-	}, nil
+		Validator: vld,
+		Store:     st,
+		Generator: gn,
+	}
 }
 
 func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
@@ -31,28 +32,30 @@ func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
 	if err != nil {
 		return nil, err
 	}
-	
 
 	// check if URL already exists
-	code, ok := s.Store.FindByURL(normalizedURL)
+	lnk, ok := s.Store.FindByURL(normalizedURL)
 
-	if ok{
-		link := NewShortLink(code, normalizedURL)
-
-		return link, nil
+	if ok {
+		return lnk, nil
 	}
 
-	// generate code
-	code, genErr := shortcode.CodeGenerator(normalizedURL)
-	if genErr != nil{
-		return nil, genErr
+	// generate code and collision handling
+	// its not complete
+	var code string
+
+	for {
+		generatedCode, err := s.Generator.GenerateCode()
+		if err != nil {
+			return nil, err
+		}
+
+		_, exists := s.Store.FindByCode(generatedCode)
+		if !exists {
+			code = generatedCode
+			break
+		}
 	}
 
-	// 5. check collision
-
-	// 6. create ShortLink
-
-	// 7. save
-
-	// 8. return
+	return s.Store.SaveIfNotExist(NewShortLink(code, normalizedURL))
 }

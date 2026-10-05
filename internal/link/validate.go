@@ -1,21 +1,47 @@
 package link
 
-import "errors"
+import (
+	"errors"
+	"net/url"
+	"strings"
+)
 
-var ErrInvalidURL = errors.New("invalid URL")
+var allowedSchemes = map[string]bool{
+	"http":  true,
+	"https": true,
+}
+
+const maxURLLength = 200
 
 type Validator interface {
-	Validate(longURL string) error
+	Validate(string) error
 }
 
 type URLValidator struct{}
 
 func (v URLValidator) Validate(longURL string) error {
-	if longURL == "" {
-		return ErrInvalidURL
+	rawURL := strings.TrimSpace(longURL)
+
+	if rawURL == "" {
+		return errors.New("url is empty")
+	}
+	if len(rawURL) > maxURLLength {
+		return errors.New("url is too long")
 	}
 
-	// TODO: validate scheme: http / https
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
 
+	if !allowedSchemes[u.Scheme] {
+		return errors.New("scheme must be http or https")
+	}
+	if u.Hostname() == "" {
+		return errors.New("url has no host")
+	}
+	if u.User != nil {
+		return errors.New("userinfo is not allowed")
+	}
 	return nil
 }
