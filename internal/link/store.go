@@ -7,3 +7,4 @@ type Store interface {
 	SaveIfNotExist(*ShortLink) (*ShortLink, error)
 	Save(*ShortLink) (error)
 }
+	

@@ -1,15 +1,17 @@
 package store
 
 import (
+	// "errors"
 	"sync"
 
 	"github.com/soroush1384akhavan/url-shortener/internal/link"
 )
 
+
 type MemoryStore struct {
 	codeLink map[string]*link.ShortLink
-	urlLink map[string]*link.ShortLink
-	mu      sync.RWMutex
+	urlLink  map[string]*link.ShortLink
+	mu       sync.RWMutex
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -49,6 +51,11 @@ func (s *MemoryStore) SaveIfNotExist(shortLink *link.ShortLink) (*link.ShortLink
 
 	if lnk, ok := s.urlLink[shortLink.LongURL]; ok {
 		return lnk, nil
+	}
+
+	if _, ok := s.codeLink[shortLink.Code]; ok {
+		return nil, link.ErrCodeCollision
+
 	}
 
 	s.codeLink[shortLink.Code] = shortLink

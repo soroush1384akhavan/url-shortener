@@ -1,11 +1,13 @@
 package link
 
 import (
-
+	"errors"
 	// "github.com/soroush1384akhavan/url-shortener/internal/store"
 
 	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
 )
+
+const maxAttempts = 20
 
 type ShortenerService struct {
 	Validator Validator
@@ -34,28 +36,23 @@ func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
 	}
 
 	// check if URL already exists
-	lnk, ok := s.Store.FindByURL(normalizedURL)
-
-	if ok {
+	if lnk, ok := s.Store.FindByURL(normalizedURL); ok {
 		return lnk, nil
 	}
 
 	// generate code and collision handling
-	// its not complete
-	var code string
-
-	for {
-		generatedCode, err := s.Generator.GenerateCode()
+	for i := 0; i < maxAttempts; i++ {
+		code, err := s.Generator.GenerateCode()
 		if err != nil {
 			return nil, err
 		}
 
-		_, exists := s.Store.FindByCode(generatedCode)
-		if !exists {
-			code = generatedCode
-			break
+		lnk, err := s.Store.SaveIfNotExist(NewShortLink(code, normalizedURL))
+		if errors.Is(err, ErrCodeCollision) {
+			continue
 		}
+		return lnk, err
 	}
 
-	return s.Store.SaveIfNotExist(NewShortLink(code, normalizedURL))
+	return nil, ErrCodeGenerationExhausted
 }
