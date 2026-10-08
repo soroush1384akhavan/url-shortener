@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/soroush1384akhavan/url-shortener/internal/domain"
@@ -325,7 +326,7 @@ func TestShortenFakeGenerator(t *testing.T) {
 		st := store.NewMemoryStore()
 		st.Save(domain.NewShortLink("abc", "https://ex.com/"))
 
-		gn := &fakeGenerator{codes: []string{"abc"}} 
+		gn := &fakeGenerator{codes: []string{"abc"}}
 		s := NewShortenerService(URLValidator{}, st, gn)
 
 		got, err := s.Shorten(rawURL)
@@ -340,4 +341,129 @@ func TestShortenFakeGenerator(t *testing.T) {
 			t.Errorf("generator calls = %d, want %d", gn.calls, maxAttempts)
 		}
 	})
+}
+
+func TestConcurrentShortenSameURL(t *testing.T) {
+	const workers = 50
+	const rawURL = "https://example.com/page"
+
+	st := store.NewMemoryStore()
+	s := NewShortenerService(URLValidator{}, st, shortcode.Base62Generator{})
+
+	codes := make([]string, workers)
+	errs := make([]error, workers)
+
+	var ready, wg sync.WaitGroup
+	start := make(chan int)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		ready.Add(1) //for starting all of them at the same time
+		go func(i int) {
+			defer wg.Done()
+
+			ready.Done()
+			<-start
+			lnk, err := s.Shorten(rawURL)
+			errs[i] = err
+			if lnk != nil {
+				codes[i] = lnk.Code
+			}
+		}(i)
+	}
+
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d: unexpected error: %v", i, err)
+		}
+	}
+
+	first := codes[0]
+	if first == "" {
+		t.Fatal("first code is empty")
+	}
+	for i, c := range codes {
+		if c != first {
+			t.Errorf("worker %d got code %q, want %q", i, c, first)
+		}
+	}
+
+	if _, ok := st.FindByCode(first); !ok {
+		t.Error("link not found in store")
+	}
+}
+
+func TestConcurrentShortenDifferentURLs(t *testing.T) {
+	const workers = 100
+
+	st := store.NewMemoryStore()
+	s := NewShortenerService(URLValidator{}, st, shortcode.Base62Generator{})
+
+	urls := make([]string, workers)
+	codes := make([]string, workers)
+	errs := make([]error, workers)
+
+	for i := range urls {
+		urls[i] = fmt.Sprintf("https://example.com/page/%d", i)
+	}
+
+	var ready, wg sync.WaitGroup
+	start := make(chan int)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		ready.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			ready.Done()
+			<-start
+			lnk, err := s.Shorten(urls[i])
+			errs[i] = err
+			if lnk != nil {
+				codes[i] = lnk.Code
+			}
+		}(i)
+	}
+
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d: unexpected error: %v", i, err)
+		}
+	}
+
+	seen := make(map[string]int, workers)
+	for i, c := range codes {
+		if c == "" {
+			t.Fatalf("worker %d: empty code", i)
+		}
+		if j, dup := seen[c]; dup {
+			t.Errorf("code %q given to both worker %d and %d", c, j, i)
+		}
+		seen[c] = i
+	}
+
+	for i, c := range codes {
+		lnk, ok := st.FindByCode(c)
+		if !ok {
+			t.Errorf("worker %d: code %q not found in store", i, c)
+			continue
+		}
+
+		normalized, err := NormalizeURL(urls[i])
+		if err != nil {
+			t.Fatalf("normalize failed for worker %d: %v", i, err)
+		}
+		if lnk.LongURL != normalized {
+			t.Errorf("worker %d: code %q -> %q, want %q", i, c, lnk.LongURL, urls[i])
+		}
+	}
 }

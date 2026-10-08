@@ -12,6 +12,11 @@ import (
 
 const maxAttempts = 20
 
+type Shortener interface {
+	Shorten(rawURL string) (*domain.ShortLink, error)
+	GetByCode(code string) (*domain.ShortLink, error)
+}
+
 type ShortenerService struct {
 	Validator Validator
 	Store     Store
@@ -51,7 +56,7 @@ func (s *ShortenerService) Shorten(rawURL string) (*domain.ShortLink, error) {
 		}
 
 		lnk, err := s.Store.SaveIfNotExist(domain.NewShortLink(code, normalizedURL))
-		if errors.Is(err, apperr.ErrCodeCollision) {	
+		if errors.Is(err, apperr.ErrCodeCollision) {
 			continue
 		}
 

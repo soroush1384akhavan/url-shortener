@@ -11,11 +11,11 @@ import (
 )
 
 type Handler struct {
-	service *link.ShortenerService
+	service link.Shortener
 	baseURL string
 }
 
-func NewHandler(service *link.ShortenerService, baseURL string) *Handler {
+func NewHandler(service link.Shortener, baseURL string) *Handler {
 	return &Handler{
 		service: service,
 		baseURL: strings.TrimRight(baseURL, "/"),
