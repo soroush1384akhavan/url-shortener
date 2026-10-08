@@ -2,13 +2,12 @@ package link
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"path"
 	"strings"
 )
 
-type rule func(u *url.URL) error
+type rule func(u *url.URL)
 
 var rules = []rule{
 	lowerSchema,
@@ -26,67 +25,60 @@ func NormalizeURL(rawURL string) (string, error) {
 		return "", fmt.Errorf("%w: %v", ErrInvalidURL, err)
 	}
 	for _, r := range rules {
-		if err := r(u); err != nil {
-			return "", err
-		}
+		r(u)
 	}
 	return u.String(), nil
 }
 
-func lowerSchema(u *url.URL) error {
+func lowerSchema(u *url.URL) {
 	u.Scheme = strings.ToLower(u.Scheme)
-	return nil
 }
 
-func lowerHost(u *url.URL) error {
+func lowerHost(u *url.URL) {
 	u.Host = strings.ToLower(u.Host)
-	return nil
 }
 
-func dropDefaultPort(u *url.URL) error {
+func dropDefaultPort(u *url.URL) {
 	port := u.Port()
 
 	if (u.Scheme == "http" && port == "80") ||
 		(u.Scheme == "https" && port == "443") {
-		u.Host = joinHostPort(u.Hostname(), "")
+		u.Host = joinHostPort(u.Hostname())
 	}
-	return nil
 }
 
-func ensureRootPath(u *url.URL) error {
+func ensureRootPath(u *url.URL) {
 	if u.Path == "" {
 		u.Path = "/"
 	}
-	return nil
 }
 
-func dropDotSegments(u *url.URL) error {
+func dropDotSegments(u *url.URL) {
 	if u.Path == "" {
-		return nil
+		return
 	}
 
+	trailingSlash := strings.HasSuffix(u.Path, "/") && u.Path != "/" // AI Said some urls are diffrents with ot witout / in the end of it
 	u.Path = path.Clean(u.Path)
-	u.RawPath = ""
-	return nil
-}
-
-func joinHostPort(host, port string) string {
-	if port == "" {
-		if strings.Contains(host, ":") { // for IPv6, ai recommended i didnt know that :)
-			return "[" + host + "]"
-		}
-		return host
+	if trailingSlash {
+		u.Path += "/"
 	}
-	return net.JoinHostPort(host, port)
+	u.RawPath = ""
 }
 
-func dropFragment(u *url.URL) error {
+func joinHostPort(host string) string {
+
+	if strings.Contains(host, ":") { // for IPv6, ai recommended i didnt know that :)
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func dropFragment(u *url.URL) {
 	u.Fragment = ""
 	u.RawFragment = ""
-	return nil
 }
 
-func dropEmptyQuery(u *url.URL) error {
+func dropEmptyQuery(u *url.URL) {
 	u.ForceQuery = false
-	return nil
 }

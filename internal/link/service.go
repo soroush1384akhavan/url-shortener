@@ -2,8 +2,11 @@ package link
 
 import (
 	"errors"
+
 	// "github.com/soroush1384akhavan/url-shortener/internal/store"
 
+	"github.com/soroush1384akhavan/url-shortener/internal/apperr"
+	"github.com/soroush1384akhavan/url-shortener/internal/domain"
 	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
 )
 
@@ -23,7 +26,7 @@ func NewShortenerService(vld Validator, st Store, gn shortcode.Generator) *Short
 	}
 }
 
-func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
+func (s *ShortenerService) Shorten(rawURL string) (*domain.ShortLink, error) {
 	// validate
 	if err := s.Validator.Validate(rawURL); err != nil {
 		return nil, err
@@ -47,17 +50,18 @@ func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
 			return nil, err
 		}
 
-		lnk, err := s.Store.SaveIfNotExist(NewShortLink(code, normalizedURL))
-		if errors.Is(err, ErrCodeCollision) {
+		lnk, err := s.Store.SaveIfNotExist(domain.NewShortLink(code, normalizedURL))
+		if errors.Is(err, apperr.ErrCodeCollision) {	
 			continue
 		}
+
 		return lnk, err
 	}
 
 	return nil, ErrCodeGenerationExhausted
 }
 
-func (s *ShortenerService) GetByCode(code string) (*ShortLink, error) {
+func (s *ShortenerService) GetByCode(code string) (*domain.ShortLink, error) {
 
 	ShortLink, exists := s.Store.FindByCode(code)
 

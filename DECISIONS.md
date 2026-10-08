@@ -6,37 +6,42 @@
 
 URLs are validated before they are stored.
 
-The current normalization strategy is intentionally conservative. The URL is parsed and normalized without changing path or query semantics.
+The normalization strategy is intentionally conservative. The URL is parsed and normalized without changing path or query semantics.
 
-URLs such as:
+For example, these URLs are currently treated as different URLs:
 
 - `https://example.com/path`
 - `https://example.com/path/`
 
-are currently treated as different URLs.
-
 This avoids modifying URLs in ways that could change their meaning.
 
-Normalization is performed before looking up the URL in the store. This ensures that idempotency is based on the normalized representation rather than the raw request value.
-
----
+Normalization is performed before looking up the URL in the store. This ensures that idempotency is based on the normalized representation rather than the raw input received by the HTTP API.
 
 ### URL validation
 
-A URL must:
+URLs are validated before normalization and storage.
+
+The current validator requires a URL to:
 
 - be non-empty
-- use the `http` or `https` scheme
+- be within the configured maximum URL length
+- use either the `http` or `https` scheme
+- contain a hostname
+- not contain user information
 
 The application does not make an HTTP request to the destination URL during validation.
 
 Validation is separated from the shortening service through a `Validator` interface.
 
-The current implementation uses a URL validator, but keeping validation behind an interface allows additional validation rules to be introduced later, such as blocklists or stricter URL policies.
+The current implementation uses `URLValidator`, while the interface allows the validation strategy to be replaced or extended later without changing the shortening service.
 
-Validation failures are returned as errors instead of boolean-only results so the caller can preserve information about why the operation failed.
+Validation errors are categorized using the sentinel error:
 
----
+```go
+ErrInvalidURL
+```
+
+Specific validation failures wrap `ErrInvalidURL` using `%w`. This allows the HTTP layer to identify invalid URLs with `errors.Is` while still preserving a more descriptive error message.
 
 ### Idempotency
 
@@ -44,7 +49,7 @@ The same normalized URL must always return the same short code.
 
 Before generating a new code, the shortening service asks the store whether the normalized URL already exists.
 
-If the URL already exists, the previously stored `ShortLink` is returned and the code generator is not called.
+If the URL already exists, the previously stored `ShortLink` is returned and the generator is not called.
 
 Conceptually:
 
@@ -66,13 +71,13 @@ existing      code
 link
 ```
 
-The in-memory store maintains a URL-based index so existing links can be found without scanning every stored link.
+The in-memory store maintains a URL-based index, allowing an existing URL to be found directly without scanning all stored links.
 
----
+Idempotency is also preserved when multiple requests for the same URL are processed concurrently. The final duplicate check is performed atomically by the store before inserting a new link.
 
 ### Link model
 
-A shortened link is represented by a `ShortLink`.
+A shortened link is represented by `ShortLink`.
 
 It currently contains:
 
@@ -80,24 +85,20 @@ It currently contains:
 - `LongURL`
 - `CreatedAt`
 
-`CreatedAt` is stored when the link is originally created and uses UTC time.
+`CreatedAt` is assigned when a link is originally created and is stored in UTC.
 
-An existing link is returned from storage instead of constructing a new `ShortLink` for duplicate requests. This preserves metadata such as the original creation time.
-
----
+When a duplicate URL is shortened, the previously stored `ShortLink` is returned instead of constructing a new one. This preserves the original metadata, including the creation time.
 
 ### Link storage
 
 Part 1 uses an in-memory store.
 
-The store maintains indexes that allow lookup in both directions.
-
-Conceptually:
+The store maintains two indexes:
 
 ```text
 normalized URL
      ↓
-    code
+ ShortLink
 ```
 
 and:
@@ -108,21 +109,21 @@ code
 ShortLink
 ```
 
-The URL index is primarily used for idempotency, while the code index is used for short-code lookup and redirects.
+The URL index is primarily used for idempotency.
+
+The code index is used for redirect lookup and collision detection.
 
 The store implementation is kept separate from the shortening service.
 
-A `Store` interface is defined close to the service that consumes it, while the concrete `MemoryStore` implementation lives in the `store` package.
+The `Store` interface is defined close to the service that consumes it, while the concrete `MemoryStore` implementation is defined in the `store` package.
 
-This allows another storage implementation to be introduced later without tightly coupling the shortening service to the memory store.
-
----
+This allows the storage implementation to be changed later without coupling the shortening service directly to the in-memory implementation.
 
 ### Code generation
 
 Short codes are generated only for URLs that do not already exist in the store.
 
-The current generator produces a random 7-character Base62 code.
+The current implementation generates random 7-character Base62 codes.
 
 The alphabet is:
 
@@ -130,49 +131,80 @@ The alphabet is:
 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 ```
 
-This gives 62 possible values for each character.
+Each character therefore has 62 possible values.
 
-With a length of 7, the possible code space is:
+A 7-character code provides:
 
 ```text
 62^7
 ```
 
-which is approximately 3.5 trillion possible codes.
+possible combinations, which is approximately 3.5 trillion.
 
-Random values are generated using Go's `crypto/rand` package rather than a basic pseudo-random generator.
+Random values are generated using Go's `crypto/rand` package.
 
 Code generation is implemented in the separate `shortcode` package.
 
-A `Generator` interface is used so the generation strategy can later be replaced or mocked during testing.
+The service depends on a `Generator` interface rather than directly depending on `Base62Generator`.
 
-The code generator is responsible only for generating candidate codes. It does not determine whether a generated code already exists in storage.
+This makes the generation strategy replaceable and also allows deterministic generators to be introduced in tests.
 
----
+The generator is responsible only for producing candidate codes. It does not know whether a code already exists in storage.
 
 ### Collision handling
 
-Random generation does not guarantee that every generated code is unique.
+Random code generation can theoretically generate a code that is already assigned to another URL.
 
-A generated code therefore must be checked against the store before it is accepted.
+Collision detection is performed by the store when attempting to insert a new link.
 
-An existing mapping must never be silently overwritten by a different URL.
+The store checks both the URL and the generated code while holding the same exclusive lock.
 
-The store currently exposes save behavior intended to reject an already-existing mapping rather than blindly overwrite it.
+Conceptually:
 
-The final collision strategy is still being refined. The intended behavior is to generate another candidate code when a collision occurs.
+```text
+lock
+ ↓
+URL already exists?
+ ├── yes → return existing link
+ ↓ no
+code already exists?
+ ├── yes → ErrCodeCollision
+ ↓ no
+save link
+ ↓
+unlock
+```
 
-Collision handling will remain separate from the code generator because the generator itself does not have access to storage.
+This prevents an existing code from being silently overwritten.
 
----
+The shortening service handles `ErrCodeCollision` by generating another candidate code and trying again.
+
+Retries are bounded using:
+
+```go
+maxAttempts = 20
+```
+
+If a unique code cannot be stored after the maximum number of attempts, the shortening operation fails instead of retrying indefinitely.
+
+Collision detection is intentionally kept outside the generator because uniqueness depends on the current contents of storage.
 
 ### Concurrency and locking
 
-The in-memory store may be accessed concurrently by multiple goroutines handling HTTP requests.
+HTTP requests may be processed concurrently by Go's HTTP server.
 
-Go maps are not safe for concurrent reads and writes, so the memory store is protected using `sync.RWMutex`.
+The in-memory store is therefore shared between multiple goroutines.
 
-Read operations use:
+Go maps are not safe for concurrent reads and writes, so the memory store is protected by `sync.RWMutex`.
+
+Read-only operations such as:
+
+```text
+FindByURL
+FindByCode
+```
+
+use:
 
 ```go
 RLock()
@@ -181,20 +213,18 @@ RUnlock()
 
 This allows multiple readers to access the store concurrently.
 
-Write operations use:
+Mutating operations use:
 
 ```go
 Lock()
 Unlock()
 ```
 
-This gives write operations exclusive access while the maps are being modified.
+The important check-and-save operation is performed inside one exclusive critical section.
 
-The locking is owned by the memory-store implementation rather than by the shortening service. Callers therefore do not need to manage synchronization themselves.
+This avoids a check-then-act race where two goroutines could both observe that a URL or code does not exist and then attempt to insert conflicting data.
 
-Operations that perform a check followed by a write must also be designed carefully so the combined operation does not introduce a logical race between goroutines.
-
----
+Locking is owned entirely by `MemoryStore`. The shortening service and HTTP handlers do not manipulate mutexes directly.
 
 ### Shortening flow
 
@@ -207,148 +237,307 @@ validate
    ↓
 normalize
    ↓
-find existing link by URL
+find existing link by normalized URL
    ↓
 if found → return existing link
    ↓
-generate random Base62 code
+generate candidate Base62 code
    ↓
-check/save without overwriting existing data
+attempt atomic save
    ↓
-create/store ShortLink
-   ↓
-return ShortLink
+code collision?
+   ├── yes → retry with another code
+   └── no  → return stored link
 ```
 
-Validation, normalization, code generation, and storage are intentionally separated rather than putting all logic in one function or HTTP handler.
-
----
+Validation, normalization, code generation, persistence logic, and HTTP handling are intentionally separated instead of placing all behavior inside the HTTP handler.
 
 ### Package layout
 
-The current project structure separates the main responsibilities into packages.
+The current internal package structure is:
 
 ```text
 internal/
+├── httpapi/
 ├── link/
-├── store/
-└── shortcode/
+├── shortcode/
+└── store/
 ```
 
-The `link` package currently contains:
+The `link` package contains:
 
-- `ShortLink`
-- URL validation abstractions
+- the `ShortLink` model
+- URL validation
 - URL normalization
-- the shortening service
-- the `Store` interface consumed by the service
+- service/business logic
+- the `Store` interface
+- domain/service errors
 
 The `store` package contains:
 
-- the in-memory store implementation
-- synchronization for access to in-memory data
+- the `MemoryStore` implementation
+- in-memory indexes
+- synchronization and locking
 
 The `shortcode` package contains:
 
-- the code-generation interface
-- the Base62 random generator
+- the `Generator` interface
+- the random Base62 generator
 
-This layout keeps storage and code-generation implementation details outside the shortening service.
+The `httpapi` package contains:
 
----
+- HTTP handlers
+- request and response DTOs
+- route registration
+- HTTP error/status mapping
+- Swagger annotations
+
+The `cmd/server` package is the application entry point and is responsible for constructing and connecting the concrete dependencies.
 
 ### Dependency direction
 
-The shortening service depends on abstractions rather than directly depending on `MemoryStore`.
+The shortening service depends on abstractions instead of directly depending on concrete infrastructure.
 
 Conceptually:
 
 ```text
-ShortenerService
-      ↓
- Store interface
-      ↑
- MemoryStore
+             Validator
+                 ↑
+                 |
+ShortenerService → Store interface
+                 |
+                 ↓
+             Generator
 ```
 
-The concrete store implementation satisfies the interface implicitly, following Go's interface model.
+`MemoryStore` implements the `Store` interface implicitly.
 
-The concrete dependencies are intended to be created and connected in the application entry point rather than inside the shortening service.
+`Base62Generator` implements the generator interface implicitly.
 
----
+The concrete implementations are constructed in `cmd/server/main.go` and injected into the service.
+
+The HTTP handler receives the already-constructed shortening service instead of constructing dependencies itself.
+
+This keeps dependency wiring at the application entry point.
 
 ### Error handling
 
-Operations that can fail return errors.
+Expected application errors are represented using sentinel errors where callers need to distinguish their meaning.
 
-Validation returns an error when a URL is invalid.
+Current examples include:
 
-Code generation propagates errors from `crypto/rand`.
+```text
+ErrInvalidURL
+ErrNotFound
+ErrCodeCollision
+```
 
-Store operations that may fail also return errors.
+Errors may be wrapped using `%w`.
 
-Errors may be wrapped with `%w` when additional context is useful while preserving the original error for later inspection with `errors.Is`.
+Higher layers use `errors.Is` to identify a known error category without depending on the error message itself.
 
-The HTTP layer will later be responsible for translating application errors into the required HTTP status codes.
+For example:
 
----
+```text
+ErrInvalidURL
+→ HTTP 400 Bad Request
+
+ErrNotFound
+→ HTTP 404 Not Found
+```
+
+Unexpected internal failures are logged by the HTTP layer and exposed to clients only as a generic:
+
+```text
+500 Internal Server Error
+```
+
+This avoids leaking internal implementation details to API clients.
+
+The HTTP layer also uses `errors.As` to recognize `http.MaxBytesError` when the request body exceeds its configured maximum size.
 
 ### HTTP API
 
-The HTTP layer has not been finalized yet.
+Part 1 exposes two endpoints.
 
-Part 1 will expose:
+#### `POST /api/shorten`
+
+The request body is JSON:
+
+```json
+{
+  "url": "https://example.com"
+}
+```
+
+A successful request returns:
+
+```text
+201 Created
+```
+
+with a JSON response containing:
+
+```json
+{
+  "code": "aB12cD3",
+  "short_url": "http://localhost:8080/aB12cD3"
+}
+```
+
+If the same normalized URL is submitted again, the existing link is returned with the same code while still returning `201 Created`.
+
+Invalid JSON or an invalid URL returns:
+
+```text
+400 Bad Request
+```
+
+Unexpected service failures return:
+
+```text
+500 Internal Server Error
+```
+
+The HTTP request body is limited using `http.MaxBytesReader`. Requests exceeding the configured body limit return:
+
+```text
+413 Content Too Large
+```
+
+#### `GET /{code}`
+
+The short code is read from the URL path.
+
+The handler asks the shortening service to retrieve the corresponding link.
+
+If found, the handler returns:
+
+```text
+302 Found
+```
+
+with the original long URL as the redirect destination.
+
+If the code does not exist:
+
+```text
+404 Not Found
+```
+
+is returned.
+
+Unexpected lookup failures return:
+
+```text
+500 Internal Server Error
+```
+
+### HTTP routing
+
+The project uses Go's standard `net/http` package and Go 1.22+ `ServeMux` routing syntax.
+
+HTTP methods and paths are registered at the routing layer:
 
 ```text
 POST /api/shorten
-GET  /{code}
+GET /{code}
 ```
 
-`POST /api/shorten` will create or return an existing shortened link.
+The HTTP handlers are responsible for translating HTTP-specific input into service calls and translating service results or errors back into HTTP responses.
 
-`GET /{code}` will look up the original URL and return a `302 Found` redirect.
+Business logic such as normalization, collision handling, and storage synchronization is not implemented in the handlers.
 
-The HTTP layer will remain separate from validation, code generation, and store logic.
+### Request and response DTOs
 
----
+The HTTP API uses dedicated request and response structs rather than exposing the internal `ShortLink` model directly.
+
+The shortening request contains:
+
+```text
+url
+```
+
+The shortening response exposes:
+
+```text
+code
+short_url
+```
+
+The internal `CreatedAt` and normalized `LongURL` fields are not exposed by the Part 1 shortening endpoint.
+
+This keeps the HTTP contract separate from the internal domain model.
 
 ### Server configuration
 
-The server will support:
+Runtime server configuration is provided using command-line flags.
+
+The supported flags are:
 
 ```text
 -addr
-```
-
-for the HTTP listen address, and:
-
-```text
 -base
 ```
 
-for constructing the returned short URL.
+`-addr` controls the address on which the HTTP server listens.
 
-The default base URL will be:
+The default value is:
+
+```text
+:8080
+```
+
+`-base` controls the public base URL used when constructing returned short URLs.
+
+The default value is:
 
 ```text
 http://localhost:8080
 ```
 
-The final values and wiring will be documented after the HTTP server implementation is completed.
+These values are intentionally separate.
 
----
+For example, an application could listen internally on:
+
+```text
+:8080
+```
+
+while returning public URLs based on:
+
+```text
+https://example.com
+```
+
+This allows the application to work correctly behind a reverse proxy or load balancer.
+
+### Swagger / API documentation
+
+Swagger documentation is generated for the HTTP endpoints.
+
+Swagger-related annotations are kept in the HTTP layer because API documentation is an HTTP concern rather than part of the shortening domain logic.
+
+The Swagger tooling is an additional project dependency and is used only for API documentation and manual API inspection/testing.
+
+### AI assistance
+
+AI was used only as a consultant for specific questions about Go concepts, error handling, concurrency, HTTP handlers, package boundaries, and design tradeoffs. The implementation itself was written and integrated manually.
 
 ### Current limitations / TODO
 
-The following Part 1 work is still in progress:
+The main Part 1 implementation is complete enough for testing.
 
-- finalize collision retry behavior
-- complete HTTP handlers
-- add `-addr` and `-base` flags
-- map validation and lookup failures to HTTP status codes
-- add tests for shortening and redirects
+Remaining Part 1 work:
+
+- add `httptest` coverage for successful shortening
+- test that the same URL returns the same code
+- add redirect tests
 - add table-driven invalid URL tests
-- add unknown-code tests
-- add duplicate URL tests
-- add concurrent duplicate shortening tests
-- verify with `go test -race ./...`
+- test unknown codes returning `404`
+- test concurrent shortening
+- test concurrent shortening of the same URL
+- run `go test ./...`
+- run `go vet ./...`
+- run `go test -race ./...`
+- review this document after tests are finalized
