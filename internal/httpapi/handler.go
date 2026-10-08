@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/soroush1384akhavan/url-shortener/internal/link"
 )
@@ -116,5 +117,58 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, sl.LongURL, http.StatusFound)
+
+}
+
+type GetMetadataResponse struct {
+	URL       string    `json:"url"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// GetMetadata godoc
+// @Summary Get link metadata
+// @Description Returns metadata for a shortened link by code
+// @Tags links
+// @Produce json
+// @Param code path string true "Short code"
+// @Success 200 {object} GetMetadataResponse
+// @Failure 404 {string} string "Link not found"
+// @Failure 500 {string} string "Internal server error"
+// @Router /api/v1/links/{code} [get]
+func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	code := r.PathValue("code")
+
+	if len(code) < 6 || len(code) > 8 {
+		http.Error(w, "link not found", http.StatusNotFound)
+		return
+	}
+
+	sl, err := h.service.GetByCode(code)
+	if err != nil {
+		if errors.Is(err, link.ErrNotFound) {
+			http.Error(w, "link not found", http.StatusNotFound)
+			return
+		}
+
+		log.Printf("get by code failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	response := GetMetadataResponse{
+		URL:       sl.LongURL,
+		CreatedAt: sl.CreatedAt,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("failed to encode GetMetaData response: %v", err)
+	}
 
 }

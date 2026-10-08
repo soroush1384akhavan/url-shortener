@@ -143,15 +143,15 @@ curl -s -X POST localhost:8080/api/shorten \
 
 | Done | Pts | Requirement |
 |:----:|:---:|-------------|
-| [ ] | 4 | `POST /api/shorten` returns **201** with `code` and `short_url` |
-| [ ] | 3 | **Idempotency:** second `POST` with the **same URL** returns the **same** `code` (test required) |
-| [ ] | 4 | `GET /{code}` returns **302** with correct `Location` |
-| [ ] | 3 | Unknown code → **404**; bad/missing URL → **400** |
-| [ ] | 3 | URL validation and no server-side fetch of long URL |
-| [ ] | 2 | Codes 6–8 chars for new URLs; collision strategy for **new** codes only |
-| [ ] | 2 | `-base` flag used for `short_url` |
-| [ ] | 2 | `httptest`: shorten + redirect; table tests for bad URL and unknown code |
-| [ ] | 2 | Concurrent test (include concurrent duplicate shorten for same URL); **`go test -race ./...`** passes |
+| [✅] | 4 | `POST /api/shorten` returns **201** with `code` and `short_url` |
+| [✅] | 3 | **Idempotency:** second `POST` with the **same URL** returns the **same** `code` (test required) |
+| [✅] | 4 | `GET /{code}` returns **302** with correct `Location` |
+| [✅] | 3 | Unknown code → **404**; bad/missing URL → **400** |
+| [✅] | 3 | URL validation and no server-side fetch of long URL |
+| [✅] | 2 | Codes 6–8 chars for new URLs; collision strategy for **new** codes only |
+| [✅] | 2 | `-base` flag used for `short_url` |
+| [✅] | 2 | `httptest`: shorten + redirect; table tests for bad URL and unknown code |
+| [✅] | 2 | Concurrent test (include concurrent duplicate shorten for same URL); **`go test -race ./...`** passes |
 
 ### Decisions you must document (Part 1)
 
@@ -185,12 +185,12 @@ curl -s -X POST localhost:8080/api/shorten \
 
 | Done | Pts | Requirement |
 |:----:|:---:|-------------|
-| [ ] | 5 | Metadata route **200** / **404** with correct JSON |
-| [ ] | 4 | `ErrNotFound`, `ErrInvalidURL` from store/domain |
-| [ ] | 4 | `%w` + `errors.Is` in HTTP mapping |
-| [ ] | 5 | `Store` interface + fake used in tests |
-| [ ] | 4 | Tests for metadata route and error mapping |
-| [ ] | 3 | Test or note in README: idempotency still works via `Store` / HTTP after Part 2 changes |
+| [✅] | 5 | Metadata route **200** / **404** with correct JSON |
+| [✅] | 4 | `ErrNotFound`, `ErrInvalidURL` from store/domain |
+| [✅] | 4 | `%w` + `errors.Is` in HTTP mapping |
+| [✅] | 5 | `Store` interface + fake used in tests |
+| [✅] | 4 | Tests for metadata route and error mapping |
+| [✅] | 3 | Test or note in README: idempotency still works via `Store` / HTTP after Part 2 changes |
 
 ### Decisions you must document (Part 2)
 

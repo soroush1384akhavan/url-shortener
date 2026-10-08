@@ -3,11 +3,13 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/soroush1384akhavan/url-shortener/internal/domain"
 	"github.com/soroush1384akhavan/url-shortener/internal/link"
@@ -166,6 +168,7 @@ type fakeService struct {
 	err          error
 	shortenCalls int
 	gotURL       string
+	gotCode      string
 }
 
 func (f *fakeService) Shorten(rawURL string) (*domain.ShortLink, error) {
@@ -175,6 +178,7 @@ func (f *fakeService) Shorten(rawURL string) (*domain.ShortLink, error) {
 }
 
 func (f *fakeService) GetByCode(code string) (*domain.ShortLink, error) {
+	f.gotCode = code
 	return f.link, f.err
 }
 
@@ -344,5 +348,101 @@ func TestRouterShortenThenRedirect(t *testing.T) {
 	}
 	if loc := rec2.Header().Get("Location"); loc != "https://example.com/" {
 		t.Errorf("Location = %q", loc)
+	}
+}
+
+// GetMetaData
+func TestGetMetadataSuccess(t *testing.T) {
+	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	sl := domain.NewShortLink("abc123", "https://example.com/")
+	sl.CreatedAt = createdAt
+
+	fs := &fakeService{link: sl}
+	h := NewHandler(fs, "http://localhost:8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/links/abc123", nil)
+	req.SetPathValue("code", "abc123")
+	rec := httptest.NewRecorder()
+
+	h.GetMetadata(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if fs.gotCode != "abc123" {
+		t.Errorf("service got code %q, want abc123", fs.gotCode)
+	}
+
+	var raw map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	if raw["url"] != "https://example.com/" {
+		t.Errorf("url = %v, want https://example.com/", raw["url"])
+	}
+	got, ok := raw["created_at"].(string)
+	if !ok {
+		t.Fatalf("created_at missing or not a string: %v", raw["created_at"])
+	}
+	parsed, err := time.Parse(time.RFC3339, got)
+	if err != nil {
+		t.Fatalf("created_at %q is not RFC3339: %v", got, err)
+	}
+	if !parsed.Equal(createdAt) {
+		t.Errorf("created_at = %v, want %v", parsed, createdAt)
+	}
+}
+
+func TestGetMetadataErrors(t *testing.T) {
+	tests := map[string]struct {
+		method     string
+		code       string
+		err        error
+		wantStatus int
+	}{
+		"wrong method POST":   {http.MethodPost, "abc123", nil, http.StatusMethodNotAllowed},
+		"wrong method DELETE": {http.MethodDelete, "abc123", nil, http.StatusMethodNotAllowed},
+		"code too short":      {http.MethodGet, "abc", nil, http.StatusNotFound},
+		"code empty":          {http.MethodGet, "", nil, http.StatusNotFound},
+		"code too long":       {http.MethodGet, "abcdefghi", nil, http.StatusNotFound},
+		"not found":           {http.MethodGet, "abc123", link.ErrNotFound, http.StatusNotFound},
+		"wrapped not found":   {http.MethodGet, "abc123", fmt.Errorf("lookup: %w", link.ErrNotFound), http.StatusNotFound},
+		"internal error":      {http.MethodGet, "abc123", errors.New("boom"), http.StatusInternalServerError},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			fs := &fakeService{err: tc.err}
+			h := NewHandler(fs, "http://localhost:8080")
+
+			req := httptest.NewRequest(tc.method, "/api/v1/links/"+tc.code, nil)
+			req.SetPathValue("code", tc.code)
+			rec := httptest.NewRecorder()
+
+			h.GetMetadata(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestRouterGetMetadata(t *testing.T) {
+	sl := domain.NewShortLink("abc123", "https://example.com/")
+	h := NewHandler(&fakeService{link: sl}, "http://localhost:8080")
+	router := NewRouter(h)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/links/abc123", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }

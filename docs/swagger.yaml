@@ -1,5 +1,12 @@
 basePath: /
 definitions:
+  httpapi.GetMetadataResponse:
+    properties:
+      created_at:
+        type: string
+      url:
+        type: string
+    type: object
   httpapi.shortenRequest:
     properties:
       url:
@@ -61,6 +68,33 @@ paths:
           schema:
             type: string
       summary: Shorten a URL
+      tags:
+      - links
+  /api/v1/links/{code}:
+    get:
+      description: Returns metadata for a shortened link by code
+      parameters:
+      - description: Short code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httpapi.GetMetadataResponse'
+        "404":
+          description: Link not found
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: Get link metadata
       tags:
       - links
 swagger: "2.0"

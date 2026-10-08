@@ -54,6 +54,47 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/links/{code}": {
+            "get": {
+                "description": "Returns metadata for a shortened link by code",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "links"
+                ],
+                "summary": "Get link metadata",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Short code",
+                        "name": "code",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httpapi.GetMetadataResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Link not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/{code}": {
             "get": {
                 "description": "Redirects a short code to its original long URL",
@@ -85,6 +126,17 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "httpapi.GetMetadataResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
         "httpapi.shortenRequest": {
             "type": "object",
             "properties": {

@@ -10,7 +10,7 @@ func NewRouter(h *Handler) http.Handler {
 
 	mux.HandleFunc("POST /api/shorten", h.Shorten)
 	mux.HandleFunc("GET /{code}", h.Redirect)
-
+	mux.HandleFunc("GET /api/v1/links/{code}", h.GetMetadata)
 
 	mux.Handle("/swagger/", httpSwagger.WrapHandler)
 
