@@ -56,3 +56,15 @@ func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
 
 	return nil, ErrCodeGenerationExhausted
 }
+
+func (s *ShortenerService) GetByCode(code string) (*ShortLink, error) {
+
+	ShortLink, exists := s.Store.FindByCode(code)
+
+	if exists {
+		return ShortLink, nil
+	}
+
+	return nil, ErrNotFound
+
+}

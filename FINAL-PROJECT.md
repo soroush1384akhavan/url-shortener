@@ -96,7 +96,7 @@ url-shortener/
 
 Use `cmd/` for entrypoints and `internal/` for packages you design (names and boundaries are up to you). Keep `main` thin.
 
----
+--- 
 
 ## Part 1 — MVP (25 points)
 

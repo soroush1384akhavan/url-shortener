@@ -1,0 +1,102 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Simple URL shortener API",
+        "title": "URL Shortener API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/",
+    "paths": {
+        "/api/shorten": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "links"
+                ],
+                "summary": "Shorten a URL",
+                "parameters": [
+                    {
+                        "description": "URL to shorten",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httpapi.shortenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/httpapi.shortenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/{code}": {
+            "get": {
+                "description": "Redirects a short code to its original long URL",
+                "tags": [
+                    "links"
+                ],
+                "summary": "Redirect to the original URL",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Short code",
+                        "name": "code",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Found"
+                    },
+                    "404": {
+                        "description": "Link not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "httpapi.shortenRequest": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "httpapi.shortenResponse": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "short_url": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

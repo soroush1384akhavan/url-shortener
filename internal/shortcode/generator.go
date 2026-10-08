@@ -2,6 +2,7 @@ package shortcode
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
 )
 
@@ -21,7 +22,7 @@ func (b Base62Generator) GenerateCode() (string, error) {
 	for i := range result {
 		n, err := rand.Int(rand.Reader, max)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("generate short code: %w", err)
 		}
 
 		result[i] = base62[n.Int64()]

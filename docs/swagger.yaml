@@ -1,0 +1,66 @@
+basePath: /
+definitions:
+  httpapi.shortenRequest:
+    properties:
+      url:
+        type: string
+    type: object
+  httpapi.shortenResponse:
+    properties:
+      code:
+        type: string
+      short_url:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Simple URL shortener API
+  title: URL Shortener API
+  version: "1.0"
+paths:
+  /{code}:
+    get:
+      description: Redirects a short code to its original long URL
+      parameters:
+      - description: Short code
+        in: path
+        name: code
+        required: true
+        type: string
+      responses:
+        "302":
+          description: Found
+        "404":
+          description: Link not found
+          schema:
+            type: string
+      summary: Redirect to the original URL
+      tags:
+      - links
+  /api/shorten:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: URL to shorten
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpapi.shortenRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/httpapi.shortenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+      summary: Shorten a URL
+      tags:
+      - links
+swagger: "2.0"

@@ -1,7 +1,7 @@
 package link
 
 import (
-	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 )
@@ -11,7 +11,7 @@ var allowedSchemes = map[string]bool{
 	"https": true,
 }
 
-const maxURLLength = 200
+const maxURLLength = 400
 
 type Validator interface {
 	Validate(string) error
@@ -23,25 +23,24 @@ func (v URLValidator) Validate(longURL string) error {
 	rawURL := strings.TrimSpace(longURL)
 
 	if rawURL == "" {
-		return errors.New("url is empty")
+		return fmt.Errorf("%w: url is empty", ErrInvalidURL)
 	}
 	if len(rawURL) > maxURLLength {
-		return errors.New("url is too long")
+		return fmt.Errorf("%w: url is too long", ErrInvalidURL)
 	}
 
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalidURL, err)
 	}
 
-	if !allowedSchemes[u.Scheme] {
-		return errors.New("scheme must be http or https")
+	scheme := strings.ToLower(u.Scheme)
+	if !allowedSchemes[scheme] {
+		return fmt.Errorf("%w: scheme must be http or https", ErrInvalidURL)
 	}
 	if u.Hostname() == "" {
-		return errors.New("url has no host")
+		return fmt.Errorf("%w: url has no host", ErrInvalidURL)
 	}
-	if u.User != nil {
-		return errors.New("userinfo is not allowed")
-	}
+
 	return nil
 }

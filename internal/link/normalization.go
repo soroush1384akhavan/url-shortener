@@ -1,6 +1,7 @@
 package link
 
 import (
+	"fmt"
 	"net"
 	"net/url"
 	"path"
@@ -22,7 +23,7 @@ var rules = []rule{
 func NormalizeURL(rawURL string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", ErrInvalidURL, err)
 	}
 	for _, r := range rules {
 		if err := r(u); err != nil {
