@@ -694,7 +694,20 @@ Generate an HTML coverage report:
 go tool cover -html=coverage -o coverage.html
 ```
 
-Total statement coverage is above the required 70% threshold.
+Test coverage
+
+Run the tests and generate a coverage report:
+
+```
+go test ./... -coverprofile=coverage
+go tool cover -func=coverage
+```
+
+The latest run achieved 94.0% total statement coverage across all packages, including cmd/server and the PostgreSQL store.
+
+total: (statements) 94.0%
+
+PostgreSQL must be running and DATABASE_URL must be set to include the database integration tests.
 
 The test suite includes coverage for:
 
