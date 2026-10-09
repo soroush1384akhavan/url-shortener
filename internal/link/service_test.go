@@ -287,7 +287,7 @@ func (f *fakeGenerator) GenerateCode() (string, error) {
 		i = len(f.codes) - 1
 	}
 	f.calls++
-	fmt.Println(f.calls)
+	// fmt.Println(f.calls)
 	return f.codes[i], nil
 }
 

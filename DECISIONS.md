@@ -1,11 +1,13 @@
-# Design decisions
+# Design Decisions
 
 ## Dependencies
 
-- `github.com/swaggo/http-swagger` — used only to expose Swagger UI for manual API inspection during development. It is not required by the URL-shortening domain itself.
-- Any other direct Swaggo module that appears in `go.mod` should also remain documented here because the assignment requires every non-stdlib/non-allowed dependency to be explained.
+- `github.com/swaggo/http-swagger` — used only to expose Swagger UI for manual API inspection during development. It is not part of the URL-shortening domain logic.
+- GORM and the PostgreSQL driver are used for the persistent store in Part 4.
 
-## Part 1
+---
+
+## Part 1 — Core URL Shortener
 
 ### URL normalization
 
@@ -414,127 +416,54 @@ The Part 1 response exposes `code` and `short_url`.
 
 Internal fields such as `CreatedAt` and normalized `LongURL` are not exposed by the shorten endpoint.
 
-### Server configuration
+### Concurrency
 
-Runtime configuration is provided using command-line flags.
+`MemoryStore` uses `sync.RWMutex`.
 
-`-addr` controls the listen address and defaults to:
+Read-only operations such as `FindByURL` and `FindByCode` use `RLock`, while mutating operations use the exclusive `Lock`.
 
-```text
-:8080
-```
+The duplicate check, collision check, and insertion are kept inside the same exclusive critical section.
 
-`-base` controls the public base URL used to construct short URLs and defaults to:
+Lock ownership remains inside the store; service and HTTP layers do not manipulate mutexes directly.
 
-```text
-http://localhost:8080
-```
 
-These values are intentionally separate so the process can listen on an internal address while publishing links for an external host, such as behind a reverse proxy.
-
-### Swagger / API documentation
-
-Swagger was added only as a development convenience for manual API inspection.
-
-Swagger annotations remain in the HTTP layer because they describe the transport contract rather than domain behavior.
-
-Swagger is not required for Part 1 grading. Any non-stdlib Swagger modules present in `go.mod` are documented under `## Dependencies`.
-
-### Testing strategy and final verification
-
-Part 1 service tests cover:
-
-- valid shortening
-- URL normalization
-- same URL returning the same stored link/code
-- found/not-found lookups
-- invalid URLs
-- validator failures
-- generator failures
-- collision retry
-- retry exhaustion
-- concurrent duplicate shortening
-- concurrent shortening of different URLs
-
-HTTP tests use `httptest` and cover:
-
-- successful shorten returning exactly `201`
-- response JSON containing `code` and `short_url`
-- HTTP-level idempotency
-- malformed request bodies
-- missing/empty URL values
-- invalid URL handling
-- oversized request bodies
-- internal service errors
-- redirect `302` and correct `Location`
-- unknown/invalid codes
-- router registration
-- full shorten-then-redirect flow
-
-A small fake service is used for handler error-path tests. A custom failing `http.ResponseWriter` is used to exercise the response-encoding failure branch.
-
-Final Part 1 verification passed with:
+### Package layout
 
 ```text
-go test ./...
-go vet ./...
-go test -race ./...
+cmd/
+└── server/
+    └── main.go
+
+internal/
+├── apperr/
+├── domain/
+├── httpapi/
+├── link/
+├── shortcode/
+└── store/
 ```
 
-Global statement coverage measured with:
+Responsibilities are split as follows:
 
-```text
-go test -coverprofile=coverage.out ./...
-go tool cover -func=coverage.out
-```
+- `domain` — core `ShortLink` model
+- `apperr` — shared sentinel errors
+- `link` — validation, normalization, service orchestration, consumer-side interfaces
+- `store` — concrete storage implementations
+- `shortcode` — Base62 code generation
+- `httpapi` — HTTP handlers, DTOs, routing, HTTP error mapping, Swagger annotations
+- `cmd/server` — composition root and runtime wiring
 
-was:
+### Testing
 
-```text
-90.4%
-```
+Part 1 tests cover validation, normalization, idempotency, collisions, retry exhaustion, concurrent shortening, redirect behavior, HTTP error mapping, and routing.
 
-which exceeds the required 70% threshold.
+AI assistance was used as a consultant for focused questions about Go interfaces, package boundaries, error wrapping, concurrency, testing, and design trade-offs. Implementation and integration were performed in the repository.
 
-### AI assistance
+---
 
-AI was used only as a consultant for focused questions about Go concepts, package boundaries, interfaces, error wrapping, concurrency, `httptest`, race detection, and design tradeoffs.
+## Part 2 — Abstraction and Metadata
 
-The implementation and integration were performed manually.
-
-AI also helped explain the idea of a custom failing `http.ResponseWriter` for exercising the JSON-encoding failure path; the final code was written and integrated manually.
-
-No complete project module or complete handler implementation was generated for direct submission.
-
-
-
-# Design decisions
-
-## Part 2
-
-### Part 2 started from a Part 1 architecture that was already prepared for it
-
-A significant part of the Part 2 requirements had already been satisfied during Part 1.
-
-This was intentional. Part 1 was implemented with package boundaries, interfaces, domain separation, and explicit error categories instead of putting all behavior directly inside the HTTP handlers.
-
-Because of that, Part 2 did not require a large refactor. Most of the work was adding the metadata endpoint and verifying that the abstractions already introduced in Part 1 behaved correctly.
-
-In particular, these Part 2 concerns were already handled during Part 1:
-
-- the shortening service depended on a `Store` interface instead of a concrete `MemoryStore`
-- the `Store` interface was defined close to the consumer
-- the concrete in-memory implementation lived in the `store` package
-- `ShortLink` already contained `CreatedAt`
-- `ShortLink` had already been moved into the independent `domain` package
-- `ErrInvalidURL` already existed as a recognizable sentinel error
-- `ErrNotFound` already existed for failed code lookup
-- errors were already wrapped with `%w` where extra context was needed
-- higher layers already used `errors.Is` instead of comparing error strings
-- idempotency was already implemented through normalized-URL lookup
-- tests already used interfaces and fake dependencies where useful
-
-As a result, Part 2 mostly extended the existing design instead of replacing it.
+Part 2 reused abstractions already introduced in Part 1, so only a small refactor was required.
 
 ### Metadata endpoint
 
@@ -544,9 +473,9 @@ Part 2 adds:
 GET /api/v1/links/{code}
 ```
 
-This endpoint returns metadata about an existing shortened link instead of redirecting the client.
+A successful response contains the original URL and creation timestamp.
 
-The response shape is:
+Example:
 
 ```json
 {
@@ -555,41 +484,13 @@ The response shape is:
 }
 ```
 
-A successful lookup returns `200 OK`.
+A successful lookup returns `200 OK`, unknown links return `404 Not Found`, and unexpected failures return `500 Internal Server Error`.
 
-An unknown code returns `404 Not Found`.
-
-Unexpected service failures return `500 Internal Server Error`.
-
-The metadata endpoint uses a dedicated response DTO, `GetMetadataResponse`, rather than serializing the domain model directly.
-
-This keeps the HTTP contract separate from the internal `ShortLink` representation and allows the domain model to change without automatically changing the public API.
-
-### Reuse of existing domain metadata
-
-`ShortLink` already stored:
-
-```text
-Code
-LongURL
-CreatedAt
-```
-
-from Part 1.
-
-Therefore Part 2 did not require a new persistence structure just to support metadata lookup.
-
-`CreatedAt` is assigned when the link is first created and is stored in UTC.
-
-When the same normalized URL is shortened again, the previously stored `ShortLink` is returned rather than creating a new one. This means the original creation timestamp is preserved.
-
-The metadata endpoint therefore reports the creation time of the original short link rather than the time of the most recent duplicate shorten request.
+A dedicated response DTO is used rather than serializing the domain object directly.
 
 ### Store abstraction
 
-The shortening service consumes a `Store` interface rather than depending directly on `MemoryStore`.
-
-The interface is defined near the consumer rather than inside the implementation package.
+The shortening service consumes a `Store` interface instead of depending on `MemoryStore`.
 
 Conceptually:
 
@@ -600,62 +501,12 @@ ShortenerService
  Store interface
       ^
       |
- MemoryStore
+ MemoryStore / PostgresStore
 ```
 
-This choice was already made in Part 1, so Part 2 could reuse it without refactoring the service.
+The interface is defined near the consumer. This keeps the service independent from concrete persistence technology and enabled Part 4 to add PostgreSQL without rewriting the business logic.
 
-The main benefit is that business logic does not depend on a specific storage implementation.
-
-This will also make Part 4 persistence easier because a persistent store can implement the same abstraction without requiring the service to be rewritten around a database-specific type.
-
-### Sentinel errors
-
-Part 2 requires callers to be able to distinguish important application-level failures without depending on error-message text.
-
-The project uses sentinel errors including:
-
-```text
-ErrInvalidURL
-ErrNotFound
-```
-
-`ErrInvalidURL` represents invalid shortening input.
-
-`ErrNotFound` represents a failed lookup when no link exists for the requested short code.
-
-The HTTP layer maps these categories to transport-specific responses:
-
-```text
-ErrInvalidURL -> 400 Bad Request
-ErrNotFound   -> 404 Not Found
-```
-
-Unexpected errors are treated as internal failures and returned as `500 Internal Server Error`.
-
-The client is not given internal error details.
-
-### Error wrapping with `%w`
-
-When a lower-level error needs additional context, it is wrapped using `%w`.
-
-Conceptually:
-
-```text
-ErrNotFound
-    |
-lookup failed: ErrNotFound
-    |
-higher-level context: lookup failed: ErrNotFound
-```
-
-The important property is that the original error remains part of the error chain.
-
-This allows the code to preserve both a stable machine-checkable error category and additional human-readable context for debugging.
-
-Using `%v` instead would only include the error text and would break the unwrap chain.
-
-### `errors.Is`
+### Error semantics
 
 Higher layers use:
 
@@ -663,167 +514,38 @@ Higher layers use:
 errors.Is(err, target)
 ```
 
-instead of comparing error strings.
+for sentinel/category errors and `errors.As` when identifying a concrete error type such as `*http.MaxBytesError`.
 
-This allows a sentinel such as `ErrNotFound` or `ErrInvalidURL` to still be recognized even if one or more layers have wrapped it.
+Wrapping with `%w` preserves the original error chain.
 
-The metadata handler therefore correctly handles both a direct `ErrNotFound` and a wrapped error such as:
+### Metadata consistency
 
-```text
-lookup: ErrNotFound
-```
+Because duplicate shortening returns the existing `ShortLink`, both the code and original `CreatedAt` remain stable.
 
-as `404 Not Found`.
+The metadata endpoint therefore reports the original creation time rather than the time of the most recent request.
 
-This behavior is covered by a test using a wrapped `ErrNotFound`.
+### Testing
 
-### `errors.As`
+Metadata tests cover:
 
-`errors.As` is used when the code needs to identify an error by its concrete type rather than by sentinel identity.
+- successful lookup
+- content type
+- correct URL and timestamp
+- direct and wrapped `ErrNotFound`
+- unexpected service errors
+- invalid code lengths
+- wrong method
+- router registration
 
-For example, request-body size handling uses `*http.MaxBytesError`.
+AI assistance was used as a consultant for error handling and test design concepts.
 
-The code uses `errors.As` there because it wants to detect whether an error in the chain has that concrete type.
+---
 
-This is different from `errors.Is`, which is used for recognizable sentinel/category errors.
-
-### Idempotency remains unchanged
-
-Part 2 does not change shortening idempotency.
-
-The same normalized URL still returns the same previously stored short link.
-
-The lookup flow remains:
-
-```text
-raw URL
-   |
-validate
-   |
-normalize
-   |
-FindByURL
-   |
-   +-> found: return existing ShortLink
-   |
-generate candidate code
-   |
-save
-```
-
-Because the existing `ShortLink` is returned, both the code and `CreatedAt` remain stable across duplicate shorten requests.
-
-Adding the metadata endpoint therefore did not introduce a second source of truth for link data.
-
-### HTTP handler dependency
-
-The HTTP handler depends on the `link.Shortener` interface rather than directly on `*ShortenerService`.
-
-This was also introduced during Part 1.
-
-It makes the handler easier to test because a small fake service can be injected without constructing the real store, validator, or generator.
-
-The same fake service is reused for Part 2 tests to simulate successful metadata lookup, `ErrNotFound`, wrapped `ErrNotFound`, and unexpected internal errors.
-
-### Metadata endpoint tests
-
-Part 2 adds tests for the new endpoint.
-
-The successful metadata test verifies:
-
-- `200 OK`
-- `Content-Type: application/json`
-- the code passed to the service is correct
-- the returned `url` is correct
-- `created_at` is serialized as a valid RFC3339-compatible timestamp
-- the returned timestamp matches the stored `CreatedAt`
-
-Error-path tests cover:
-
-- wrong HTTP method
-- empty code
-- code shorter than the accepted range
-- code longer than the accepted range
-- direct `ErrNotFound`
-- wrapped `ErrNotFound`
-- unexpected internal service error
-
-A router-level test also sends:
-
-```text
-GET /api/v1/links/abc123
-```
-
-through the actual router.
-
-This verifies that the endpoint is not only correct as a handler function, but is also registered correctly in routing.
-
-### Verification
-
-After the Part 2 changes, the project was verified with:
-
-```text
-go test ./internal/httpapi -v
-go test ./...
-go vet ./...
-go test -race ./...
-```
-
-All tests passed.
-
-The race-enabled test suite was run under WSL/Linux because the Windows race build required a C toolchain through `cgo`.
-
-### Part 2 summary
-
-Part 2 required only a relatively small amount of new implementation because the Part 1 design had already introduced most of the necessary abstractions.
-
-The main new behavior in Part 2 was the metadata endpoint.
-
-The rest of Part 2 primarily validated and reused design decisions that were already present:
-
-```text
-consumer-side Store interface
-sentinel errors
-error wrapping
-errors.Is
-domain metadata
-idempotent storage
-testable HTTP dependency injection
-```
-
-This was a deliberate result of keeping Part 1 modular and avoiding unnecessary coupling between HTTP, business logic, storage, and domain types.
-
-
-
-
-# Design decisions
-
-## Part 3
-
-### Part 3 focus
-
-Part 3 focuses on production-oriented HTTP server behavior, concurrency choices, and performance measurement.
-
-A large part of the concurrency foundation was already implemented in Part 1:
-
-- `MemoryStore` already used `sync.RWMutex`
-- read operations already used `RLock`
-- write operations already used `Lock`
-- concurrent same-URL and different-URL tests already existed
-- `go test -race ./...` had already passed
-
-Because of that, Part 3 mainly added:
-
-- explicit HTTP server timeouts
-- benchmark coverage for read and write paths
-- parallel benchmark coverage
-- performance observations based on measured results
+## Part 3 — Performance and Measurement
 
 ### HTTP server timeouts
 
-Instead of relying only on the convenience form of `http.ListenAndServe`, the application now constructs an explicit `http.Server`.
-
-The configured values are:
+The application uses an explicit `http.Server` with:
 
 ```text
 ReadHeaderTimeout: 2s
@@ -832,77 +554,25 @@ WriteTimeout:      5s
 IdleTimeout:       30s
 ```
 
-The purpose of these settings is to prevent slow or idle clients from holding server resources indefinitely.
-
-`ReadHeaderTimeout` limits how long a client may take to send HTTP headers.
-
-`ReadTimeout` limits how long the server spends reading a request.
-
-`WriteTimeout` limits how long the server spends writing a response.
-
-`IdleTimeout` limits how long an idle keep-alive connection may remain open between requests.
-
-These timeouts are server-level transport settings rather than handler business logic.
+These limits prevent slow or idle clients from holding server resources indefinitely.
 
 ### Graceful shutdown
 
-While adding explicit `http.Server` configuration, graceful shutdown support was also introduced.
+The application listens for `SIGINT` and `SIGTERM` using `signal.NotifyContext`.
 
-The server runs in a goroutine while the main goroutine waits for either:
+On shutdown, it calls `Server.Shutdown` with a 10-second timeout so the server stops accepting new connections while giving in-flight requests a bounded window to finish.
 
-```text
-server failure
-or
-SIGINT / SIGTERM
-```
+`http.ErrServerClosed` is treated as expected during normal shutdown.
 
-Shutdown signals are observed through `signal.NotifyContext`.
+### Locking choice
 
-When a shutdown signal is received, the application calls:
+The in-memory store uses `sync.RWMutex` because the expected workload is strongly read-heavy.
 
-```text
-server.Shutdown(...)
-```
+`FindByCode` and `FindByURL` use shared read locking.
 
-with a 10-second timeout context.
+`SaveIfNotExist` and other mutations use an exclusive lock.
 
-This stops accepting new requests and gives active requests a limited window to complete before the process exits.
-
-`http.ErrServerClosed` is treated as an expected result of normal shutdown rather than as a server failure.
-
-Graceful shutdown is not the main Part 3 requirement, but it was added naturally while moving from `http.ListenAndServe` to an explicit `http.Server`.
-
-### Mutex choice
-
-The in-memory store uses:
-
-```go
-sync.RWMutex
-```
-
-instead of a plain `sync.Mutex`.
-
-The expected workload is strongly read-heavy:
-
-```text
-approximately 30,000 reads / second
-approximately 300 writes / second
-```
-
-or about a 100:1 read-to-write ratio.
-
-Read operations such as:
-
-```text
-FindByURL
-FindByCode
-```
-
-use `RLock` / `RUnlock`.
-
-Mutating operations use `Lock` / `Unlock`.
-
-The most important write operation, `SaveIfNotExist`, keeps the duplicate check, collision check, and insertion inside the same exclusive critical section.
+This matches the assumed workload of approximately 30,000 reads per second versus 300 writes per second.
 
 The reason for using `RWMutex` is that multiple readers can proceed concurrently while writes remain exclusive.
 
@@ -1139,283 +809,32 @@ mappings is planned.
 
 The benchmark still provides a useful baseline because it measures the application-level service and synchronization overhead before database I/O is introduced.
 
-### AI assistance
+### Memory profiling
 
-AI was used as a consultant to explain Go benchmark structure and the `testing.B.RunParallel` / `testing.PB` API.
-
-The benchmark implementation was written and integrated manually.
-
-This assistance should be mentioned because `RunParallel` was a Go testing API that was not previously familiar during implementation.
-
-### Current Part 3 status
-
-Completed so far:
+The `alloc_space` profile showed that the main allocation sources were approximately:
 
 ```text
-explicit http.Server configuration
-ReadHeaderTimeout
-ReadTimeout
-WriteTimeout
-IdleTimeout
-graceful shutdown
-RWMutex design already in place
-sequential shorten benchmarks
-existing-URL benchmark
-sequential code lookup benchmark
-parallel shorten benchmark
-parallel code lookup benchmark
-benchmark allocation reporting
-initial performance analysis
+net/url.parse                      ~28.2%
+crypto/rand.Int                    ~24.1%
+MemoryStore.SaveIfNotExist         ~18.9%
+math/big.nat.make                  ~10.5%
+domain.NewShortLink                 ~5.2%
+fmt.Sprintf                         ~4.1%
 ```
 
-Remaining Part 3 work:
+`fmt.Sprintf` is partly benchmark overhead because benchmark inputs intentionally use different URLs.
 
-```text
-run the benchmark suite on WSL/Linux for an additional baseline
-perform the required profiling step and record at least one profiling observation
-run final go test ./...
-run final go vet ./...
-run final go test -race ./...
-```
-
-# Part 3 — Performance & Measurement
-
-## Scope
-
-Part 3 focuses on measuring and hardening the current single-process, in-memory implementation before introducing persistent storage.
-
-The main goals were:
-
-- configure explicit HTTP server timeouts
-- justify the locking strategy
-- benchmark shorten and redirect/read paths
-- profile CPU and memory behavior
-- document whether an in-memory capacity/eviction policy should exist
-
----
-
-## Locking choice
-
-The in-memory store uses `sync.RWMutex`.
-
-The expected workload is strongly read-heavy. I assume approximately:
-
-- 30,000 redirect/read requests per second
-- 300 shorten/write requests per second
-- roughly a 100:1 read-to-write ratio
-
-Redirects and metadata lookups only need to read existing mappings, while shortening a new URL may update both the code index and the normalized-URL index.
-
-`FindByCode` and `FindByURL` therefore use `RLock`, which allows multiple concurrent readers.
-
-`SaveIfNotExist` uses the exclusive `Lock`. The idempotency check, collision check, and insertion are kept inside the same exclusive critical section so concurrent requests cannot create inconsistent mappings.
-
-I chose `RWMutex` instead of a plain `Mutex` because reads are expected to dominate writes.
-
-The benchmark and profiling results support this choice: the read path is extremely cheap, while most of the create-path cost comes from URL processing, random code generation, allocation, and map work rather than lock overhead.
-
----
-
-## Server timeouts
-
-The HTTP server is configured explicitly with:
-
-```text
-ReadHeaderTimeout: 2s
-ReadTimeout:       5s
-WriteTimeout:      5s
-IdleTimeout:       30s
-```
-
-### `ReadHeaderTimeout`
-
-Limits how long a client may take to send request headers.
-
-This protects the server from clients that slowly send headers and keep connections occupied unnecessarily.
-
-### `ReadTimeout`
-
-Limits how long the server may spend reading the full request, including its body.
-
-The API only accepts small JSON requests, so a request that needs several seconds to arrive is considered abnormally slow.
-
-### `WriteTimeout`
-
-Limits how long the server may spend writing a response.
-
-Responses from this service are small JSON payloads or redirects, so normal responses should finish well below this value.
-
-### `IdleTimeout`
-
-Limits how long an HTTP keep-alive connection may stay idle between requests.
-
-A client that exceeds the configured timeout may have its connection terminated instead of being allowed to consume server resources indefinitely.
-
----
-
-## Graceful shutdown
-
-While moving from `http.ListenAndServe` to an explicit `http.Server`, graceful shutdown was also added.
-
-The process listens for `SIGINT` and `SIGTERM` using `signal.NotifyContext`.
-
-When shutdown is requested, the server stops accepting new connections and calls `Server.Shutdown` with a 10-second timeout so in-flight requests have a chance to finish.
-
-Graceful shutdown is not required for the core Part 3 performance requirement, but it fits naturally with the explicit `http.Server` setup and improves production behavior.
-
----
-
-## Benchmarks
-
-Benchmarks were added for both shortening and redirect/read paths.
-
-Example results from Windows/amd64:
-
-```text
-BenchmarkShortenNewURL-20          645469      1987 ns/op      909 B/op     26 allocs/op
-BenchmarkShortenExistingURL-20    2838927       416.4 ns/op    336 B/op      3 allocs/op
-BenchmarkShortenParallel-20         554614      2561 ns/op     1004 B/op     28 allocs/op
-BenchmarkGetByCode-20             81780079        13.08 ns/op     0 B/op      0 allocs/op
-BenchmarkGetByCodeParallel-20     24400410        48.08 ns/op     0 B/op      0 allocs/op
-BenchmarkRedirect-20                563094      1834 ns/op     6691 B/op     24 allocs/op
-```
-
-Absolute benchmark values depend on hardware, operating system, Go version, and background system load, so the main value of the benchmarks is the relative comparison between paths.
-
-### Benchmark observations
-
-- Existing-URL shortening is much cheaper than shortening a new URL.
-- This is expected because idempotency allows the service to return the existing mapping without generating or storing a new code.
-- `GetByCode` is extremely cheap in the current in-memory implementation and performs zero allocations in the measured benchmark.
-- Parallel reads remain cheap despite synchronization overhead.
-- Parallel creation is slower because writers need exclusive access to the store.
-- The HTTP redirect benchmark is much more expensive than the raw store lookup because it includes handler work and `httptest` request/response allocation.
-- Therefore the redirect benchmark should not be interpreted as pure store lookup cost.
-
----
-
-## CPU profiling
-
-CPU profiling was performed against `BenchmarkShortenNewURL`.
-
-The most notable application-level cumulative CPU costs were approximately:
-
-```text
-Base62Generator.GenerateCode     ~27.5%
-MemoryStore.SaveIfNotExist       ~20.6%
-net/url.Parse                    ~11.9%
-NormalizeURL                     ~11.3%
-MemoryStore.FindByURL             ~7.5%
-```
-
-A significant portion of the code-generation cost comes from `crypto/rand.Int`, because public short codes are generated using cryptographically secure randomness.
-
-The profile also showed runtime and garbage-collection work, which is consistent with the allocation-heavy nature of creating new records.
-
-An important observation is that synchronization itself was not the dominant CPU cost.
-
-The main create-path costs were:
-
-- cryptographic random generation
-- URL parsing and normalization
-- map lookup, insertion, hashing, and growth
-- memory allocation and garbage collection
-
-This means there is currently no evidence that redesigning or removing the `RWMutex` would provide the most valuable optimization.
-
----
-
-## Memory profiling
-
-Memory profiling was also performed against `BenchmarkShortenNewURL`.
-
-### Allocation profile
-
-The `alloc_space` profile showed roughly 593 MB of cumulative allocations during the benchmark run.
-
-The largest allocation sources were approximately:
-
-```text
-net/url.parse                         ~28.2%
-crypto/rand.Int                       ~24.1%
-MemoryStore.SaveIfNotExist            ~18.9%
-math/big.nat.make                     ~10.5%
-domain.NewShortLink                    ~5.2%
-fmt.Sprintf                            ~4.1%
-```
-
-This indicates that allocation pressure in the create path mainly comes from:
-
-- URL parsing
-- cryptographic random-number generation
-- growing/updating the in-memory maps
-- creating `ShortLink` values
-- generating unique benchmark URLs
-
-`fmt.Sprintf` is partly benchmark overhead because the benchmark intentionally creates a different URL for each iteration.
-
-The allocation attributed to `SaveIfNotExist` is also expected because `BenchmarkShortenNewURL` continuously grows the in-memory dataset.
-
-This behavior does not by itself indicate a memory leak.
-
-### In-use heap profile
-
-The `inuse_space` snapshot was mostly dominated by Go runtime allocations and was less useful for understanding application-owned data.
-
-The final snapshot showed only a few megabytes of live memory, mostly associated with runtime thread/goroutine infrastructure and time-zone initialization.
-
-By the time the profile snapshot was captured, benchmark-owned service/store objects were no longer necessarily reachable, so garbage collection could reclaim them.
-
-For this benchmark, `alloc_space` was therefore more useful than `inuse_space` for understanding where the application allocates memory.
-
----
-
-## Profiling conclusion
-
-The benchmark and profiling results are consistent.
-
-The read path is extremely cheap in the current in-memory implementation.
-
-The new-link creation path is more expensive because it performs:
-
-- validation
-- normalization
-- cryptographic code generation
-- memory allocation
-- map lookup and insertion
-- collision-safe synchronized writes
-
-Given the expected read-heavy workload, further optimization of the less-frequent create path is not currently a priority.
-
-When persistent storage is introduced, database and network latency are expected to dominate these in-memory micro-costs. Future optimization should therefore be based on profiling the persistent implementation instead of prematurely optimizing the current memory-only version.
-
----
-
-## In-memory capacity and eviction
-
-No maximum in-memory link count or eviction policy is implemented.
-
-At this stage, the in-memory store is the authoritative source of truth.
-
-Evicting an entry would therefore mean losing that mapping while the process is still running.
-
-More importantly, eviction could break the idempotency guarantee:
+No in-memory eviction policy is implemented. While memory is the authoritative store, evicting a record could break the invariant:
 
 ```text
 same normalized URL -> same short code
 ```
 
-If a mapping were removed and the same URL were shortened again, the service could generate a different code.
+After Part 4, persistent storage can remain authoritative while memory or a distributed cache can later be introduced as a disposable acceleration layer.
 
-For that reason, I chose not to implement FIFO, LRU, TTL, or another eviction policy while memory is the only storage layer.
+### Verification
 
-Capacity management can be reconsidered after persistent storage is introduced. At that point, durable storage can remain authoritative while memory can be used as a disposable cache.
-
----
-
-## Verification
-
-Part 3 should be considered complete only while the following remain green:
+The project is expected to remain green under:
 
 ```bash
 go test ./...
@@ -1424,71 +843,46 @@ go test -race ./...
 go test -bench=. -benchmem ./...
 ```
 
-The race test is especially important because the store is accessed concurrently and correctness depends on the locking strategy.
+AI assistance was used as a consultant for benchmark structure, `RunParallel`, `pprof`, and interpretation of `alloc_space` versus `inuse_space`.
 
 ---
-
-## AI assistance
-
-AI was used only as a consultant for understanding benchmark and profiling concepts.
-
-Specifically, I asked for clarification about:
-
-- the syntax and purpose of `b.RunParallel`
-- CPU profiling with `-cpuprofile`
-- `go tool pprof`
-- `alloc_space` vs `inuse_space`
-- interpretation of profiling output
-
-The benchmark and application code were written and integrated manually.
-
-
-
 
 ## Part 4 — Persistence
 
 ### Storage choice
 
-For the durable storage implementation, I chose PostgreSQL with GORM.
+The durable storage implementation uses PostgreSQL with GORM.
 
-The application now supports two storage backends:
+The application supports two backends:
 
-- `memory` — the existing in-memory store.
-- `postgres` — a persistent PostgreSQL-backed store.
+```text
+memory
+postgres
+```
 
-The storage backend is selected at startup using the `-storage` flag.
-
-Examples:
+The backend is selected with:
 
 ```bash
 go run ./cmd/server -storage=memory
 go run ./cmd/server -storage=postgres
 ```
 
-For PostgreSQL, the connection string is read from the `DATABASE_URL` environment variable instead of being hard-coded in the application.
+For PostgreSQL, the DSN is read from the `DATABASE_URL` environment variable rather than being hard-coded in the application.
 
-Example:
+PostgreSQL is run locally through Docker Compose with a persistent Docker volume.
 
-```text
-host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable
-```
-
-PostgreSQL is run locally using Docker Compose. A Docker volume is used so database data survives container/application restarts.
-
-I chose PostgreSQL because it provides durable persistence, database-level concurrency control, unique constraints, atomic updates, and is also suitable for a future multi-instance deployment.
-
-GORM is used as the database access layer and PostgreSQL driver.
+PostgreSQL was chosen because it provides durable storage, database-level concurrency control, unique constraints, atomic updates, and a natural path toward multi-instance deployment.
 
 ### Store interface and context propagation
 
-The Store abstraction was changed so storage operations accept `context.Context` and return storage errors explicitly.
+Storage operations accept `context.Context`.
 
-The application flow is now:
+The request flow is:
 
 ```text
 HTTP request
     ↓
-request context
+r.Context()
     ↓
 Handler
     ↓
@@ -1499,23 +893,13 @@ Store
 PostgreSQL / MemoryStore
 ```
 
-The HTTP handlers use `r.Context()` and pass it through the service layer to the store.
+The PostgreSQL store uses GORM's `WithContext(ctx)` so database operations can observe request cancellation and deadlines.
 
-The in-memory store currently does not need the context, so it accepts it but ignores it.
-
-The PostgreSQL store uses `db.WithContext(ctx)` for database operations.
-
-This allows database queries to be cancelled if the HTTP request is cancelled or its context expires.
-
-The Store interface also exposes an atomic usage-count operation so callers do not directly mutate stored links:
-
-```text
-IncrementUsedCount(ctx, code)
-```
+The in-memory store accepts the same context through the shared interface even though its map operations do not currently need it.
 
 ### Schema and model
 
-Persistent short links are stored in the `short_links` table.
+Persistent links are stored in the `short_links` table.
 
 The model contains:
 
@@ -1527,7 +911,7 @@ created_at
 used_count
 ```
 
-The main constraints are:
+Important constraints are:
 
 ```text
 code
@@ -1551,24 +935,22 @@ used_count
     DEFAULT 0
 ```
 
-`code` is used as the primary key because short codes are already unique, immutable identifiers and are frequently used for redirect lookups.
-
-No additional numeric ID is required for the current access patterns.
+`code` is the primary key because it is already the unique immutable identifier used on the redirect path.
 
 ### URL hash and indexing
 
-The normalized URL is still stored in full.
+The complete normalized URL remains the authoritative value.
 
-A shortened hash of the normalized URL is additionally stored as `url_hash`. It is used as a compact lookup prefix.
+A deterministic 10-character truncated hash is stored as `url_hash` and used as a compact lookup prefix.
 
-The lookup is performed using both values:
+Lookup uses:
 
-```text
+```sql
 WHERE url_hash = ?
   AND normalized_url = ?
 ```
 
-The hash is not treated as the identity of a URL because truncated hashes can collide.
+The truncated hash is not treated as the identity of a URL because collisions are theoretically possible.
 
 The unique constraint is therefore:
 
@@ -1576,150 +958,196 @@ The unique constraint is therefore:
 UNIQUE(url_hash, normalized_url)
 ```
 
-rather than making `url_hash` itself unique.
+rather than a uniqueness constraint on `url_hash` alone.
 
-This allows two different URLs to have the same truncated hash while still preventing the same normalized URL from being stored twice.
-
-A separate index on only `url_hash` was initially considered, but was removed because the composite B-tree index on `(url_hash, normalized_url)` already supports lookups using `url_hash` as its leading column. Keeping both indexes would add unnecessary storage and write overhead.
+A separate index on only `url_hash` was not retained because the composite B-tree index already supports lookups by its leading column and an extra index would add write and storage overhead.
 
 ### Migrations
 
-The PostgreSQL store uses GORM `AutoMigrate` for the current schema.
+The current implementation uses GORM `AutoMigrate`.
 
-When the PostgreSQL store is initialized, GORM ensures that the `short_links` table and its required constraints exist.
+When the PostgreSQL store is initialized, GORM ensures that the required table and constraints exist.
 
-For this take-home implementation this keeps database setup simple and makes the application easy to run locally.
+For this take-home assignment, this keeps setup simple.
 
-For a larger production system I would prefer explicit, versioned migrations rather than relying only on `AutoMigrate`, so schema changes can be reviewed, ordered, rolled forward, and rolled back predictably.
+For a production system with evolving schemas, explicit versioned migrations would be preferable because migration order and rollout can be controlled and reviewed.
 
-### Idempotency and persistence
+### Idempotency across restarts
 
-Part 1 requires shortening the same normalized URL to return the same short code.
+The Part 1 rule remains:
 
-The persistent implementation preserves this behavior across application restarts.
+```text
+same normalized URL -> same short code
+```
 
-Before generating a new link, the service checks the store for the normalized URL.
+The service first calls `FindByURL`.
 
-At the database level, the unique constraint on `(url_hash, normalized_url)` also protects this invariant against concurrent inserts.
+At the database level, `(url_hash, normalized_url)` is unique, so concurrent attempts to create the same normalized URL cannot create multiple persistent mappings.
 
-`SaveIfNotExist` uses PostgreSQL conflict handling. If another request has already inserted the same normalized URL, the duplicate insert is not created and the existing link is read and returned instead.
+`SaveIfNotExist` uses PostgreSQL conflict handling. If another request has already inserted the same normalized URL, the duplicate insert is not created and the existing row is returned.
 
-Therefore:
+Because this mapping is persisted, the rule survives application restart:
 
 ```text
 same normalized URL
     ↓
-same persisted database row
+same persisted row
     ↓
 same short code
 ```
 
-This remains true after the application is restarted because the mapping is stored in PostgreSQL rather than application memory.
-
-A restart/persistence integration test creates a link using one `PostgresStore` instance, creates a second store instance using the same database, and verifies that the previously created short code and URL can still be retrieved.
+A persistence/restart integration test verifies this using a second `PostgresStore` instance connected to the same database.
 
 ### Short-code collisions
 
-`code` is a primary key, so PostgreSQL enforces uniqueness.
+`code` is a primary key.
 
-If a generated code already belongs to another URL, PostgreSQL returns a unique-constraint violation.
+If a generated code is already assigned to another URL, PostgreSQL returns a unique-constraint violation.
 
-The PostgreSQL store translates that database error into `ErrCodeCollision`.
+The PostgreSQL store translates the relevant database error into `ErrCodeCollision`.
 
-The service already understands this application error and retries code generation up to the configured maximum number of attempts.
-
-This keeps PostgreSQL-specific errors out of the service layer.
+The service then retries code generation without depending directly on PostgreSQL-specific error details.
 
 ### Crash safety and atomicity
 
-A successful shorten request is returned only after `SaveIfNotExist` has completed successfully.
+A successful shorten response is returned only after `SaveIfNotExist` succeeds.
 
-For PostgreSQL this means the insert has been accepted by the database before the HTTP handler can return the successful response.
+Therefore, the application does not return `201 Created` before the durable store has accepted the mapping.
 
-Database constraints are used instead of process-local mutexes for persistent concurrency control.
+The persistent implementation relies on database constraints and PostgreSQL concurrency semantics rather than a process-local Go mutex.
 
-In particular:
+This matters because a Go mutex cannot coordinate multiple application instances.
 
-- `code` uniqueness is enforced by the primary key.
-- URL idempotency is enforced by the composite unique constraint.
-- concurrent URL inserts are handled with database conflict handling.
-- PostgreSQL provides transaction/locking/MVCC behavior for concurrent database access.
+The main correctness guarantees are:
 
-Unlike `MemoryStore`, `PostgresStore` does not use a Go mutex. A process-local mutex would not protect data across multiple application instances anyway and would unnecessarily serialize database requests.
-
-### Used count atomicity
-
-`UsedCount` is persisted in PostgreSQL as a `BIGINT` with a default value of zero.
-
-Redirect usage is incremented inside the database using an expression equivalent to:
-
-```sql
-UPDATE short_links
-SET used_count = used_count + 1
-WHERE code = ?;
-```
-
-The count is not implemented as:
-
-```text
-SELECT count
-count++
-UPDATE count
-```
-
-because concurrent requests could read the same old value and lose an update.
-
-Performing the increment directly in PostgreSQL makes the operation atomic from the application's point of view.
-
-The in-memory implementation performs the same mutation while holding its write mutex.
+- `code` uniqueness is enforced by the primary key
+- URL idempotency is enforced by the composite unique constraint
+- concurrent duplicate insertion is handled by database conflict semantics
+- PostgreSQL provides transactional locking/MVCC behavior for concurrent access
 
 ### `created_at`
 
-`created_at` is generated when a new domain `ShortLink` is created using `time.Now().UTC()`.
+`created_at` is generated using:
 
-The value is persisted in PostgreSQL as a timestamp with time zone.
+```go
+time.Now().UTC()
+```
 
-Using UTC provides one consistent representation independent of the machine or deployment timezone.
+It is persisted in PostgreSQL using a timestamp-with-time-zone column.
 
-When a persisted row is loaded, the stored creation time is mapped back into the domain object rather than generating a new timestamp.
+When a row is loaded, the stored timestamp is mapped back to the domain object instead of creating a new timestamp.
 
-This means the original creation time survives application restarts.
+This preserves the original creation time across duplicate requests and application restarts.
 
 ### Domain/database mapping
 
-The database model is intentionally separate from the domain `ShortLink`.
+The persistence model is intentionally separate from the domain model.
 
-The mapping is approximately:
+Conceptually:
 
 ```text
-domain.Code          → model.Code
-domain.LongURL       → model.NormalizedURL
-hash(domain.LongURL) → model.URLHash
-domain.CreatedAt     → model.CreatedAt
-domain.UsedCount     → model.UsedCount
+domain.Code          -> model.Code
+domain.LongURL       -> model.NormalizedURL
+hash(domain.LongURL) -> model.URLHash
+domain.CreatedAt     -> model.CreatedAt
+domain.UsedCount     -> model.UsedCount
 ```
-
-and the reverse mapping is performed when reading records.
 
 This keeps persistence-specific fields such as `URLHash` out of the domain model.
 
-### Tests
+### Usage counting
 
-Part 4 added integration and store-level tests covering:
+The persistent store supports incrementing a usage counter by an arbitrary amount:
 
-- PostgreSQL save and lookup.
-- lookup by code.
-- lookup by normalized URL.
-- URL idempotency.
-- short-code collision handling.
-- persisted usage count.
-- missing-record behavior.
-- persistence through creation of a new store instance using the same database.
-- direct MemoryStore behavior.
-- MemoryStore idempotency and collision handling.
-- MemoryStore usage-count behavior.
+```text
+IncrementUsedCount(ctx, code, amount)
+```
 
-The full project is also checked with:
+The PostgreSQL implementation performs an atomic update equivalent to:
+
+```sql
+UPDATE short_links
+SET used_count = used_count + ?
+WHERE code = ?;
+```
+
+This avoids a read-modify-write race.
+
+The in-memory implementation performs the same increment while holding its write lock.
+
+#### Optional asynchronous usage-counter branch
+
+An additional branch, `feat/async-usage-counter`, contains an asynchronous usage-counting design.
+
+This branch was separated intentionally from the baseline PostgreSQL implementation so it can be reviewed and merged independently.
+
+The motivation is that usage counting is analytics-like work and should not reduce redirect availability or add a synchronous database write to the hot redirect path.
+
+The asynchronous design uses:
+
+```text
+redirect
+   ↓
+enqueue code into buffered channel
+   ↓
+return 302 without waiting for a database counter update
+
+background worker
+   ↓
+aggregate counts by code
+   ↓
+flush on threshold or timer
+   ↓
+IncrementUsedCount(ctx, code, amount)
+```
+
+The worker aggregates repeated redirects for the same code so many events can become one database increment.
+
+For example:
+
+```text
+abc1234 -> 450 redirects
+xyz7890 -> 120 redirects
+```
+
+can be persisted as two increments instead of 570 individual updates.
+
+The queue is bounded. If it is full, usage events are dropped rather than blocking the redirect path.
+
+A periodic flush prevents low-traffic events from remaining buffered indefinitely, while a threshold-based flush handles bursts efficiently.
+
+Graceful shutdown drains pending events and performs a final flush after the HTTP server has stopped accepting new work.
+
+The trade-off is intentional: usage counting becomes best-effort and eventually consistent. A process crash before a buffered event is flushed can lose that event, and a database flush failure can cause analytics under-counting. Redirect reliability is prioritized over exact analytics.
+
+
+No new benchmark is required merely to document this branch. The existing Part 3 measurements remain valid for the baseline in-memory implementation. If the asynchronous branch is merged and a measured performance claim is added, a focused before/after redirect benchmark should be run rather than assuming the improvement.
+
+### PostgreSQL integration tests
+
+PostgreSQL integration tests no longer rely on a hard-coded DSN.
+
+They read the test/database connection from environment configuration so the suite is not tied to one developer workstation or one fixed port.
+
+If the required external database is unavailable, integration behavior should be handled explicitly rather than failing because of a machine-specific hard-coded connection string.
+
+The test suite covers:
+
+- PostgreSQL save and lookup
+- lookup by code
+- lookup by normalized URL
+- URL idempotency
+- short-code collision handling
+- persisted usage counts
+- missing-record behavior
+- persistence through creation of a new store instance
+- direct MemoryStore behavior
+- MemoryStore idempotency and collision handling
+- MemoryStore usage-count behavior
+
+### Verification
+
+The final project checks are:
 
 ```bash
 go test ./...
@@ -1735,18 +1163,49 @@ go tool cover -func=coverage
 go tool cover -html=coverage -o coverage.html
 ```
 
-Total statement coverage is above the required 70%.
+Total statement coverage is above the required 70% threshold.
 
 ### Trade-offs
 
-The URL hash is an optimization and not the source of truth. Because it is truncated, collisions are expected to be possible, so the full normalized URL is always checked as well.
+The truncated URL hash is a lookup optimization, not a source of truth. Exact normalized-URL comparison preserves correctness in the presence of hash collisions.
 
-`AutoMigrate` was chosen for simplicity in this project. Explicit migration files would be preferable as schema evolution becomes more complex.
+`AutoMigrate` was selected for simplicity, while explicit versioned migrations would be preferable in a production system.
 
-PostgreSQL integration tests currently require an available PostgreSQL test database. For a larger project I would isolate integration tests further, for example by using a dedicated disposable test database/container.
+The PostgreSQL implementation is durable and suitable as shared storage, but it is not yet a complete high-scale architecture. Caching, replicas, partitioning, and load balancing are separate scaling concerns.
+
+The optional asynchronous usage-counter branch reduces coupling between redirect latency and counter writes, but it intentionally trades strict counter durability for redirect availability.
 
 ### AI assistance
 
-AI assistance was used as a technical consultant for discussions around PostgreSQL/GORM integration, database indexing and hash trade-offs, context propagation, atomic usage-count updates, concurrency behavior, and debugging test/coverage issues.
+AI assistance was used as a technical consultant for:
 
-Implementation and project integration were performed and verified in the repository.
+- PostgreSQL/GORM integration
+- schema and indexing trade-offs
+- context propagation
+- PostgreSQL conflict handling
+- atomic counter updates
+- integration-test configuration
+- coverage/debugging discussions
+- the design of the optional asynchronous usage counter, including buffered channels, aggregation, periodic/threshold flushing, and shutdown behavior
+
+The implementation and repository integration were performed and verified in the project.
+
+---
+
+## Final verification checklist
+
+Before submission, the project should remain green under:
+
+```bash
+go test ./...
+go vet ./...
+go test -race ./...
+```
+
+The repository should also include:
+
+- updated `README.md`
+- this `DECISIONS.md`
+- Docker Compose configuration for PostgreSQL
+- environment-based database configuration
+- total statement coverage of at least 70%
