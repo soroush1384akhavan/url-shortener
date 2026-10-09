@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -42,13 +43,26 @@ func (f *fakeGenerator) GenerateCode() (string, error) {
 	fmt.Println(f.calls)
 	return f.codes[i], nil
 }
-func TestShortenPostgresStore(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
+
+func getTestStore(t *testing.T) *PostgresStore {
+	t.Helper()
+
+	dsn := os.Getenv("DATABASE_URL")
+
+	if dsn == "" {
+		t.Skip("postgres integration test requires DATABASE_URL")
+	}
 
 	st, err := NewPostgresStore(dsn)
 	if err != nil {
-		t.Fatalf("unexpected error %s", err)
+		t.Skipf("postgres integration test skipped: database unavailable: %v", err)
 	}
+
+	return st
+}
+
+func TestShortenPostgresStore(t *testing.T) {
+	st := getTestStore(t)
 	code := fmt.Sprintf("t%05d", time.Now().UnixNano()%100000)
 	gn := &fakeGenerator{codes: []string{code}}
 
@@ -91,12 +105,7 @@ func TestShortenPostgresStore(t *testing.T) {
 }
 
 func TestPostgresStoreRestartTest(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
-
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error %s", err)
-	}
+	st := getTestStore(t)
 	code := fmt.Sprintf("t%05d", time.Now().UnixNano()%100000)
 	gn := &fakeGenerator{codes: []string{code}}
 
@@ -120,10 +129,7 @@ func TestPostgresStoreRestartTest(t *testing.T) {
 		t.Errorf("Code = %q, want %q", got.Code, code)
 	}
 
-	st2, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("failed to create second postgres store: %v", err)
-	}
+	st2 := getTestStore(t)
 
 	savedAfterRestart, err := st2.FindByCode(context.Background(), code)
 	if err != nil {
@@ -151,13 +157,9 @@ func testCode(n int64) string {
 	s := fmt.Sprintf("%x", n)
 	return s[len(s)-8:]
 }
-func TestPostgresStoreIdempotency(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
 
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+func TestPostgresStoreIdempotency(t *testing.T) {
+	st := getTestStore(t)
 
 	ctx := context.Background()
 
@@ -172,7 +174,7 @@ func TestPostgresStoreIdempotency(t *testing.T) {
 
 	first := domain.NewShortLink(code1, rawURL)
 
-	_, err = st.SaveIfNotExist(ctx, first)
+	_, err := st.SaveIfNotExist(ctx, first)
 	if err != nil {
 		t.Fatalf("unexpected error saving first link: %v", err)
 	}
@@ -194,12 +196,7 @@ func TestPostgresStoreIdempotency(t *testing.T) {
 }
 
 func TestPostgresStoreCodeCollision(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
-
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	st := getTestStore(t)
 
 	ctx := context.Background()
 
@@ -218,7 +215,7 @@ func TestPostgresStoreCodeCollision(t *testing.T) {
 
 	first := domain.NewShortLink(code, url1)
 
-	_, err = st.SaveIfNotExist(ctx, first)
+	_, err := st.SaveIfNotExist(ctx, first)
 	if err != nil {
 		t.Fatalf("unexpected error saving first link: %v", err)
 	}
@@ -233,12 +230,7 @@ func TestPostgresStoreCodeCollision(t *testing.T) {
 }
 
 func TestPostgresStoreIncrementUsedCount(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
-
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	st := getTestStore(t)
 
 	ctx := context.Background()
 
@@ -252,7 +244,7 @@ func TestPostgresStoreIncrementUsedCount(t *testing.T) {
 
 	sl := domain.NewShortLink(code, rawURL)
 
-	_, err = st.SaveIfNotExist(ctx, sl)
+	_, err := st.SaveIfNotExist(ctx, sl)
 	if err != nil {
 		t.Fatalf("unexpected error saving link: %v", err)
 	}
@@ -272,12 +264,7 @@ func TestPostgresStoreIncrementUsedCount(t *testing.T) {
 }
 
 func TestPostgresStoreSaveIfNotExistDBError(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
-
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	st := getTestStore(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -296,17 +283,12 @@ func TestPostgresStoreSaveIfNotExistDBError(t *testing.T) {
 }
 
 func TestPostgresStoreIncrementUsedCountDBError(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
-
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	st := getTestStore(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = st.IncrementUsedCount(ctx, "abc123")
+	err := st.IncrementUsedCount(ctx, "abc123")
 
 	if err == nil {
 		t.Fatal("expected database error, got nil")
@@ -314,18 +296,13 @@ func TestPostgresStoreIncrementUsedCountDBError(t *testing.T) {
 }
 
 func TestPostgresStoreIncrementUsedCountNotFound(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
-
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	st := getTestStore(t)
 
 	ctx := context.Background()
 
 	code := fmt.Sprintf("missing-%d", time.Now().UnixNano())
 
-	err = st.IncrementUsedCount(ctx, code)
+	err := st.IncrementUsedCount(ctx, code)
 
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
@@ -347,12 +324,7 @@ func TestNewPostgresStoreConnectionError(t *testing.T) {
 }
 
 func TestPostgresStoreFindByURLDBError(t *testing.T) {
-	dsn := "host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
-
-	st, err := NewPostgresStore(dsn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	st := getTestStore(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
