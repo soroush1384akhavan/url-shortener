@@ -1,10 +1,12 @@
 package main
+// new structure for testing
 
 /// $env:DATABASE_URL="host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
 import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -25,43 +27,53 @@ import (
 // @host localhost:8080
 // @BasePath /
 func main() {
-	addr := flag.String("addr", ":8080", "server listen address")
-	base := flag.String("base", "http://localhost:8080", "base URL for short links")
-	storageType := flag.String("storage", "memory", "storage backend: memory or postgres")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := run(ctx, os.Args[1:], os.Getenv)
+	stop()
 
-	flag.Parse()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
 
-	// *storageType = "postgres"
-
-	vldt := link.URLValidator{}
-	gn := shortcode.Base62Generator{}
-
-	var st link.Store
-
-	switch *storageType {
+// newStore بر اساس نوع storage، پیاده‌سازی مناسب link.Store را می‌سازد.
+func newStore(storageType, dsn string) (link.Store, error) {
+	switch storageType {
 	case "memory":
-		st = store.NewMemoryStore()
+		return store.NewMemoryStore(), nil
 
 	case "postgres":
-		dsn := os.Getenv("DATABASE_URL")
 		if dsn == "" {
-			log.Fatal("DATABASE_URL is required when storage=postgres")
+			return nil, errors.New("DATABASE_URL is required when storage=postgres")
 		}
-
-		pgStore, err := store.NewPostgresStore(dsn)
+		pg, err := store.NewPostgresStore(dsn)
 		if err != nil {
-			log.Fatalf("failed to initialize postgres store: %v", err)
+			return nil, fmt.Errorf("failed to initialize postgres store: %w", err)
 		}
-
-		st = pgStore
+		return pg, nil
 
 	default:
-		log.Fatalf("unknown storage type: %s", *storageType)
+		return nil, fmt.Errorf("unknown storage type: %s", storageType)
 	}
-	service := link.NewShortenerService(vldt, st, gn)
+}
 
+func run(ctx context.Context, args []string, getenv func(string) string) error {
+	fs := flag.NewFlagSet("url-shortener", flag.ContinueOnError)
+	addr := fs.String("addr", ":8080", "server listen address")
+	base := fs.String("base", "http://localhost:8080", "base URL for short links")
+	storageType := fs.String("storage", "memory", "storage backend: memory or postgres")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	st, err := newStore(*storageType, getenv("DATABASE_URL"))
+	if err != nil {
+		return err
+	}
+
+	service := link.NewShortenerService(link.URLValidator{}, st, shortcode.Base62Generator{})
 	handler := httpapi.NewHandler(service, *base)
-
 	router := httpapi.NewRouter(handler)
 
 	server := &http.Server{
@@ -73,9 +85,6 @@ func main() {
 		IdleTimeout:       30 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("server listening on %s", *addr)
@@ -86,7 +95,7 @@ func main() {
 
 	select {
 	case err := <-serverErr:
-		log.Fatalf("server failed: %v", err)
+		return fmt.Errorf("server failed: %w", err)
 	case <-ctx.Done():
 		log.Println("shutting down...")
 	}
@@ -95,8 +104,8 @@ func main() {
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
-		return
+		return fmt.Errorf("graceful shutdown failed: %w", err)
 	}
 	log.Println("server stopped")
+	return nil
 }
