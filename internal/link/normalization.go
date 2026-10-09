@@ -3,7 +3,6 @@ package link
 import (
 	"fmt"
 	"net/url"
-	"path"
 	"strings"
 )
 
@@ -58,12 +57,10 @@ func dropDotSegments(u *url.URL) {
 		return
 	}
 
-	trailingSlash := strings.HasSuffix(u.Path, "/") && u.Path != "/" // AI Said some urls are diffrents with ot witout / in the end of it
-	u.Path = path.Clean(u.Path)
-	if trailingSlash {
-		u.Path += "/"
-	}
-	u.RawPath = ""
+	cleaned := u.ResolveReference(u)
+
+	u.Path = cleaned.Path
+	u.RawPath = cleaned.RawPath
 }
 
 func joinHostPort(host string) string {

@@ -52,7 +52,6 @@ Validation is abstracted behind a `Validator` interface. The current implementat
 
 Invalid URL failures wrap the sentinel `ErrInvalidURL` using `%w`, allowing callers to use `errors.Is` without depending on error-message text.
 
-The maximum-length rule and rejection of userinfo are additional defensive policies beyond the minimum Part 1 requirements.
 
 ### Idempotency
 
@@ -832,16 +831,14 @@ same normalized URL -> same short code
 
 After Part 4, persistent storage can remain authoritative while memory or a distributed cache can later be introduced as a disposable acceleration layer.
 
-### Verification
+### Testing server startup
 
-The project is expected to remain green under:
+I kept main small and moved the startup logic into run. I also moved storage selection into newStore.
 
-```bash
-go test ./...
-go vet ./...
-go test -race ./...
-go test -bench=. -benchmem ./...
-```
+This lets the tests call these functions directly and check the startup behavior and storage configuration.
+
+After adding these tests, total statement coverage reached 94.0%. The main function itself is not directly covered, but run has 97.9% coverage and newStore has 55.6%.
+
 
 AI assistance was used as a consultant for benchmark structure, `RunParallel`, `pprof`, and interpretation of `alloc_space` versus `inuse_space`.
 
@@ -1209,3 +1206,177 @@ The repository should also include:
 - Docker Compose configuration for PostgreSQL
 - environment-based database configuration
 - total statement coverage of at least 70%
+## Part 5 — Scaling the Service
+
+The following sections describe how I would handle more traffic.
+These are proposed improvements and are not implemented yet.
+
+### Stateless applications and shared storage
+
+If one copy of the application cannot handle all the requests, I would
+run several copies behind a load balancer. The load balancer would
+distribute requests between healthy application instances.
+
+All instances would connect to the same PostgreSQL database and, if
+caching is added, the same Redis instance. This would allow any instance
+to handle any short link.
+
+Important link data would stay in PostgreSQL instead of only in one
+instance's memory. If an instance stops working, the others could still
+read and serve the saved links.
+
+This would spread the application workload, but the shared database
+could still become overloaded. Running more instances would also
+increase costs and make deployment more complicated.
+
+### Write-path scaling: rate limiting
+
+I would limit how often each client IP can call `POST /api/shorten`.
+As a starting point, I would allow 60 requests per minute per IP and
+adjust this limit after testing.
+
+The limit would be checked before accessing PostgreSQL. Requests above
+the limit would receive `429 Too Many Requests` with a `Retry-After`
+header telling the client when to try again.
+
+This would reduce repeated URL lookups and insert attempts. The limit
+would apply only to shortening URLs, so users could still open existing
+short links.
+
+With multiple application instances, I would keep the rate-limit counts
+in a shared Redis instance. Checking and updating a count would need to
+happen atomically so concurrent requests cannot bypass the limit.
+Otherwise, separate counters in each instance could allow more requests
+than intended.
+
+One downside is that users sharing the same public IP would also share
+the limit. Requests from many different IPs could still overload the
+database, so per-IP limiting would only be a first step.
+
+### Read-path scaling: caching popular links
+
+Some short links may be opened many times. Reading the same destination
+from PostgreSQL for every request adds repeated database work.
+
+I would use Redis to cache the `code -> longURL` mapping. All application
+instances would use the same cache.
+
+For each redirect request, the application would:
+
+1. Look for the code in Redis.
+2. If it exists, use the cached destination.
+3. Otherwise, read the destination from PostgreSQL.
+4. If the link exists, add it to Redis for later requests.
+
+PostgreSQL would remain the main storage. Removing a cached entry would
+not delete the saved link or change its code. The application could
+load it from PostgreSQL again.
+
+I would start with a cache lifetime, or TTL, of 60 seconds and adjust it
+after testing. I would also set a memory limit and use a policy that
+removes less frequently used entries when the cache becomes full.
+
+This should reduce database reads, although accessing Redis still
+requires a network request. If Redis is unavailable, the application
+could fall back to PostgreSQL, which would then receive more traffic.
+
+Redis would also add memory costs and another service to manage.
+I would measure response times and how often requests find a cached
+entry before deciding whether the improvement is worth the cost.
+
+### CDN caching for redirects
+
+For popular links, I would also configure a CDN to cache successful
+`302 Found` redirect responses for 60 seconds.
+
+When a response is cached, the CDN could return the redirect directly
+without sending the request to the application. This would reduce
+traffic reaching both the application and its storage services.
+
+Caching redirects would need explicit CDN configuration and suitable
+cache headers; I would not assume that every `302` response is cached
+automatically.
+
+The trade-off is that a cached response may become outdated. If editing
+or blocking links is added, a changed or blocked link could still
+redirect to the old destination until the cached response expires.
+
+I would remove affected entries from both Redis and the CDN when a link
+changes. A short TTL would help limit how long an old response remains
+available if cache removal fails.
+
+Requests served by the CDN would also bypass the application's usage
+counter. Accurate visit counts would therefore need information from
+the CDN as well.
+
+A CDN would add costs and configuration work. The 60-second TTL is an
+initial design choice, not a value confirmed by load testing.
+
+## Part 6 — Production Habits
+
+### Graceful shutdown
+
+Graceful shutdown is implemented in the server.
+
+The application listens for `SIGINT` and `SIGTERM` using
+`signal.NotifyContext`. When a shutdown signal arrives, it calls
+`server.Shutdown` with a 10-second timeout.
+
+During shutdown, the server stops accepting new connections, closes
+idle connections, and gives active requests time to finish.
+
+If requests finish within the timeout, shutdown completes normally.
+If the timeout expires, the application logs the shutdown error and
+exits. Requests that have not finished may be interrupted.
+
+`http.ErrServerClosed` is treated as an expected result of normal
+shutdown rather than an application failure.
+
+The scaling proposals in Part 5 are separate from this implemented
+shutdown behavior. Other Part 6 features, such as an enforced rate
+limit on link creation, are not claimed as implemented here.
+
+### Logging and observability
+
+The application currently uses Go's standard `log` package.
+
+It logs basic operational events such as:
+
+- server startup
+- server errors
+- graceful shutdown
+- unexpected errors while shortening a URL
+- unexpected errors while finding a link
+- errors while incrementing the usage counter
+
+The HTTP handlers return simple error messages to clients and log the detailed error on the server side. This helps with debugging without exposing internal details directly in the response.
+
+The application should not log full destination URLs, query strings, passwords, tokens, or other sensitive values. In particular, URLs may contain private information in their query parameters, so future logging changes should log only the short code, the operation name, the HTTP status, and the error type.
+
+PostgreSQL and GORM may also produce database error logs when a database operation fails. Database logging should be configured carefully in production so SQL statements or sensitive URL values are not written to application logs.
+
+The current project does not yet expose a full metrics system. For a production deployment, I would add request counts, response status counts, request duration, database errors, and cache hit/miss counts. These metrics would help detect slow requests and database or cache problems without storing full URLs.
+
+This logging policy is intended to make operational problems easier to investigate while reducing the chance of exposing sensitive URL data.
+
+### Domain policy
+
+The current validator accepts only URLs that use `http` or `https`
+and contain a hostname. The application does not fetch or check the
+destination URL before saving it.
+
+This prevents unsupported schemes such as `ftp`, `file`, `javascript`,
+and `data` from being stored. It also prevents the service from making
+server-side requests to user-provided URLs.
+
+A future production version should add a domain policy. It could block
+localhost, private IP addresses, loopback addresses, and known dangerous
+domains. A blocklist could also be used for domains that are reported
+for phishing or abuse.
+
+The policy should be checked before saving a new link. If a destination
+is blocked, the server should return `400 Bad Request` and should not
+write anything to the database.
+
+This policy is not fully implemented yet. The current implementation
+only validates the URL format and the allowed scheme.
