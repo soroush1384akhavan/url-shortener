@@ -24,7 +24,7 @@ The storage backend can be selected at startup.
 
 ## Requirements
 
-- Go 1.22+
+- Go 1.24+
 - Docker / Docker Compose for the PostgreSQL backend
 
 The in-memory backend does not require PostgreSQL.
@@ -551,7 +551,6 @@ constraints, locking, and MVCC.
 This is important because a Go mutex would protect only one application
 process and would not coordinate multiple server instances.
 
----
 
 ## Usage counter
 
@@ -581,6 +580,58 @@ The in-memory backend performs the increment while holding its exclusive
 write lock.
 
 ---
+
+### Optional asynchronous usage counting
+
+An additional branch, `feat/async-usage-counter`, contains an asynchronous usage-counting implementation.
+
+In that branch, redirects do not wait for a database counter update.
+
+Instead, the redirect path records the short code in a bounded in-memory queue:
+
+```text
+redirect request
+    ↓
+find link
+    ↓
+enqueue usage event
+    ↓
+return 302
+```
+
+A background worker consumes queued events and aggregates them by short code.
+
+For example:
+
+```text
+abc1234 -> 450 redirects
+xyz7890 -> 120 redirects
+```
+
+can be persisted as two counter updates rather than hundreds of individual database writes.
+
+The worker flushes aggregated counts when either:
+
+```text
+the configured threshold is reached
+or
+the periodic flush interval expires
+```
+
+Pending events are also flushed during graceful shutdown after the HTTP server has stopped accepting new requests.
+
+The queue is intentionally non-blocking. If it becomes full, usage events may be dropped rather than delaying redirects.
+
+This makes usage counting best-effort and eventually consistent:
+
+- redirect availability is prioritized over analytics accuracy
+- counters may temporarily lag behind actual redirects
+- a process crash before a flush may lose buffered events
+- failed flushes may result in under-counting
+
+A durable queue could be introduced later if exact asynchronous accounting becomes a requirement.
+
+The asynchronous implementation is kept on a separate branch so it can be reviewed and merged independently from the baseline PostgreSQL persistence implementation.
 
 ## HTTP server timeouts
 
