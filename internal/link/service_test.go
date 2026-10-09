@@ -1,12 +1,14 @@
 package link
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/soroush1384akhavan/url-shortener/internal/apperr"
 	"github.com/soroush1384akhavan/url-shortener/internal/domain"
 	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
 	"github.com/soroush1384akhavan/url-shortener/internal/store"
@@ -21,7 +23,7 @@ func TestShortenValidURL(t *testing.T) {
 
 	validUrl := "https://translate.google.com/?sl=en&tl=fa&op=translate"
 
-	lnk, err := s.Shorten(validUrl)
+	lnk, err := s.Shorten(context.Background(), validUrl)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -46,14 +48,14 @@ func TestShortenSameURLReturnsSameLink(t *testing.T) {
 
 	firstUrl := "https://translate.google.com/?sl=en&tl=fa&op=translate"
 
-	firstLink, err := s.Shorten(firstUrl)
+	firstLink, err := s.Shorten(context.Background(), firstUrl)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
 	secondUrl := "https://translate.google.com/?sl=en&tl=fa&op=translate"
 
-	secondLink, err := s.Shorten(secondUrl)
+	secondLink, err := s.Shorten(context.Background(), secondUrl)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -134,12 +136,12 @@ func TestGetByCodeFound(t *testing.T) {
 
 	rawUrl := "https://translate.google.com/?sl=en&tl=fa&op=translate"
 
-	existLink, err := s.Shorten(rawUrl)
+	existLink, err := s.Shorten(context.Background(), rawUrl)
 	if err != nil {
 		t.Fatalf("shorten failed: %v", err)
 	}
 
-	gotLnk, err := s.GetByCode(existLink.Code)
+	gotLnk, err := s.GetByCode(context.Background(), existLink.Code)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -158,8 +160,8 @@ func TestGetByCodeNotFound(t *testing.T) {
 
 	notExistCode := "ertyuip"
 
-	lnk, err := s.GetByCode(notExistCode)
-	if !errors.Is(err, ErrNotFound) {
+	lnk, err := s.GetByCode(context.Background(), notExistCode)
+	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
@@ -216,7 +218,7 @@ func TestShortenNormalizeError(t *testing.T) {
 
 	s := NewShortenerService(fv, st, gn)
 
-	got, err := s.Shorten(badURL)
+	got, err := s.Shorten(context.Background(), badURL)
 
 	if !errors.Is(err, ErrInvalidURL) {
 		t.Fatalf("err = %v, want ErrInvalidURL", err)
@@ -227,8 +229,10 @@ func TestShortenNormalizeError(t *testing.T) {
 	if !fv.called {
 		t.Error("validator was not called")
 	}
-	if _, ok := st.FindByURL(badURL); ok {
-		t.Error("link must not be saved when normalization fails")
+	_, err = st.FindByURL(context.Background(), badURL)
+
+	if !errors.Is(err, apperr.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
 
@@ -252,7 +256,7 @@ func TestShortenFakeValidator(t *testing.T) {
 
 	s := NewShortenerService(fv, st, gn)
 
-	_, err := s.Shorten("anything")
+	_, err := s.Shorten(context.Background(), "anything")
 
 	if !errors.Is(err, ErrInvalidURL) {
 		t.Fatalf("err = %v, want ErrInvalidURL", err)
@@ -260,7 +264,10 @@ func TestShortenFakeValidator(t *testing.T) {
 	if !fv.called {
 		t.Error("validator was not called")
 	}
-	if _, ok := st.FindByURL("anything"); ok {
+
+	_, err = st.FindByURL(context.Background(), "anything")
+
+	if err == nil {
 		t.Error("link must not be saved when validation fails")
 	}
 }
@@ -294,7 +301,7 @@ func TestShortenFakeGenerator(t *testing.T) {
 
 		s := NewShortenerService(URLValidator{}, st, gn)
 
-		got, err := s.Shorten(rawURL)
+		got, err := s.Shorten(context.Background(), rawURL)
 
 		if !errors.Is(err, genErr) {
 			t.Fatalf("err = %v, want %v", err, genErr)
@@ -307,12 +314,12 @@ func TestShortenFakeGenerator(t *testing.T) {
 	t.Run("retries after collision and succeeds", func(t *testing.T) {
 		st := store.NewMemoryStore()
 
-		st.SaveIfNotExist(domain.NewShortLink("abc", "https://ex.com/"))
+		st.SaveIfNotExist(context.Background(), domain.NewShortLink("abc", "https://ex.com/"))
 
 		gn := &fakeGenerator{codes: []string{"abc", "xyz"}}
 		s := NewShortenerService(URLValidator{}, st, gn)
 
-		got, err := s.Shorten(rawURL)
+		got, err := s.Shorten(context.Background(), rawURL)
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -324,12 +331,12 @@ func TestShortenFakeGenerator(t *testing.T) {
 
 	t.Run("exhausted attempts", func(t *testing.T) {
 		st := store.NewMemoryStore()
-		st.SaveIfNotExist(domain.NewShortLink("abc", "https://ex.com/"))
+		st.SaveIfNotExist(context.Background(), domain.NewShortLink("abc", "https://ex.com/"))
 
 		gn := &fakeGenerator{codes: []string{"abc"}}
 		s := NewShortenerService(URLValidator{}, st, gn)
 
-		got, err := s.Shorten(rawURL)
+		got, err := s.Shorten(context.Background(), rawURL)
 
 		if !errors.Is(err, ErrCodeGenerationExhausted) {
 			t.Fatalf("err = %v, want ErrCodeGenerationExhausted", err)
@@ -364,7 +371,7 @@ func TestConcurrentShortenSameURL(t *testing.T) {
 
 			ready.Done()
 			<-start
-			lnk, err := s.Shorten(rawURL)
+			lnk, err := s.Shorten(context.Background(), rawURL)
 			errs[i] = err
 			if lnk != nil {
 				codes[i] = lnk.Code
@@ -392,9 +399,12 @@ func TestConcurrentShortenSameURL(t *testing.T) {
 		}
 	}
 
-	if _, ok := st.FindByCode(first); !ok {
+	_, err := st.FindByCode(context.Background(), first)
+
+	if errors.Is(err, apperr.ErrNotFound) {
 		t.Error("link not found in store")
 	}
+
 }
 
 func TestConcurrentShortenDifferentURLs(t *testing.T) {
@@ -422,7 +432,7 @@ func TestConcurrentShortenDifferentURLs(t *testing.T) {
 
 			ready.Done()
 			<-start
-			lnk, err := s.Shorten(urls[i])
+			lnk, err := s.Shorten(context.Background(), urls[i])
 			errs[i] = err
 			if lnk != nil {
 				codes[i] = lnk.Code
@@ -452,8 +462,8 @@ func TestConcurrentShortenDifferentURLs(t *testing.T) {
 	}
 
 	for i, c := range codes {
-		lnk, ok := st.FindByCode(c)
-		if !ok {
+		lnk, err := st.FindByCode(context.Background(), c)
+		if errors.Is(err, apperr.ErrNotFound) {
 			t.Errorf("worker %d: code %q not found in store", i, c)
 			continue
 		}
@@ -476,19 +486,38 @@ type fakeStore struct {
 	saveLink *domain.ShortLink
 	saveErr  error
 
+	findByURLErr  error
+	findByCodeErr error
+
 	gotURL string
 }
 
-func (f *fakeStore) FindByURL(u string) (*domain.ShortLink, bool) {
+func (f *fakeStore) FindByURL(_ context.Context, u string) (*domain.ShortLink, error) {
 	f.gotURL = u
-	return f.byURL, f.byURL != nil
+
+	if f.findByURLErr != nil {
+		return nil, f.findByURLErr
+	}
+
+	if f.byURL == nil {
+		return nil, apperr.ErrNotFound
+	}
+
+	return f.byURL, nil
 }
 
-func (f *fakeStore) FindByCode(code string) (*domain.ShortLink, bool) {
-	return f.byCode, f.byCode != nil
-}
+func (f *fakeStore) FindByCode(_ context.Context, code string) (*domain.ShortLink, error) {
+	if f.findByCodeErr != nil {
+		return nil, f.findByCodeErr
+	}
 
-func (f *fakeStore) SaveIfNotExist(sl *domain.ShortLink) (*domain.ShortLink, error) {
+	if f.byCode == nil {
+		return nil, apperr.ErrNotFound
+	}
+
+	return f.byCode, nil
+}
+func (f *fakeStore) SaveIfNotExist(_ context.Context, sl *domain.ShortLink) (*domain.ShortLink, error) {
 	if f.saveErr != nil {
 		return nil, f.saveErr
 	}
@@ -498,6 +527,10 @@ func (f *fakeStore) SaveIfNotExist(sl *domain.ShortLink) (*domain.ShortLink, err
 	return sl, nil
 }
 
+func (s *fakeStore) IncrementUsedCount(_ context.Context, code string) error {
+	return nil // fake just for interfaces
+}
+
 func TestShortenExistingURLSkipsGenerator(t *testing.T) {
 	existing := domain.NewShortLink("old123", "https://example.com/page")
 	fs := &fakeStore{byURL: existing}
@@ -505,7 +538,7 @@ func TestShortenExistingURLSkipsGenerator(t *testing.T) {
 
 	s := NewShortenerService(&fakeValidator{}, fs, gn)
 
-	got, err := s.Shorten("HTTPS://Example.com:443/page#frag")
+	got, err := s.Shorten(context.Background(), "HTTPS://Example.com:443/page#frag")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -529,12 +562,88 @@ func TestShortenStoreErrorIsPropagated(t *testing.T) {
 
 	s := NewShortenerService(&fakeValidator{}, fs, gn)
 
-	got, err := s.Shorten("https://example.com/page")
+	got, err := s.Shorten(context.Background(), "https://example.com/page")
 
 	if !errors.Is(err, storeErr) {
 		t.Fatalf("err = %v, want %v", err, storeErr)
 	}
 	if got != nil {
 		t.Errorf("got = %+v, want nil", got)
+	}
+}
+
+func TestShortenerServiceIncrementUsedCount(t *testing.T) {
+	ctx := context.Background()
+
+	st := store.NewMemoryStore()
+	svc := NewShortenerService(nil, st, nil)
+
+	sl := domain.NewShortLink("abc123", "https://example.com")
+
+	_, err := st.SaveIfNotExist(ctx, sl)
+	if err != nil {
+		t.Fatalf("unexpected error saving link: %v", err)
+	}
+
+	err = svc.IncrementUsedCount(ctx, sl.Code)
+	if err != nil {
+		t.Fatalf("unexpected error incrementing used count: %v", err)
+	}
+
+	result, err := st.FindByCode(ctx, sl.Code)
+	if err != nil {
+		t.Fatalf("unexpected error finding link: %v", err)
+	}
+
+	if result.UsedCount != 1 {
+		t.Errorf("expected UsedCount 1, got %d", result.UsedCount)
+	}
+}
+
+func TestShortenerServiceShortenStoreError(t *testing.T) {
+	ctx := context.Background()
+
+	expectedErr := errors.New("database error")
+
+	st := &fakeStore{
+		findByURLErr: expectedErr,
+	}
+
+	svc := NewShortenerService(
+		&URLValidator{},
+		st,
+		nil,
+	)
+
+	result, err := svc.Shorten(ctx, "https://example.com")
+
+	if !errors.Is(err, expectedErr) {
+		t.Errorf("expected error %v, got %v", expectedErr, err)
+	}
+
+	if result != nil {
+		t.Errorf("expected nil result, got %+v", result)
+	}
+}
+
+func TestShortenerServiceGetByCodeStoreError(t *testing.T) {
+	ctx := context.Background()
+
+	expectedErr := errors.New("database error")
+
+	st := &fakeStore{
+		findByCodeErr: expectedErr,
+	}
+
+	svc := NewShortenerService(nil, st, nil)
+
+	result, err := svc.GetByCode(ctx, "abc123")
+
+	if !errors.Is(err, expectedErr) {
+		t.Errorf("expected error %v, got %v", expectedErr, err)
+	}
+
+	if result != nil {
+		t.Errorf("expected nil result, got %+v", result)
 	}
 }

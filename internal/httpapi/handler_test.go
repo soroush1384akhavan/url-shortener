@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soroush1384akhavan/url-shortener/internal/apperr"
 	"github.com/soroush1384akhavan/url-shortener/internal/domain"
 	"github.com/soroush1384akhavan/url-shortener/internal/link"
 	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
@@ -169,15 +171,22 @@ type fakeService struct {
 	shortenCalls int
 	gotURL       string
 	gotCode      string
+	usedCount    int
 }
 
-func (f *fakeService) Shorten(rawURL string) (*domain.ShortLink, error) {
+func (s *fakeService) IncrementUsedCount(ctx context.Context, code string) error {
+	s.usedCount++
+	return nil // mock i
+
+}
+
+func (f *fakeService) Shorten(_ context.Context, rawURL string) (*domain.ShortLink, error) {
 	f.shortenCalls++
 	f.gotURL = rawURL
 	return f.link, f.err
 }
 
-func (f *fakeService) GetByCode(code string) (*domain.ShortLink, error) {
+func (f *fakeService) GetByCode(_ context.Context, code string) (*domain.ShortLink, error) {
 	f.gotCode = code
 	return f.link, f.err
 }
@@ -301,7 +310,7 @@ func TestRedirectHandlerErrors(t *testing.T) {
 		"wrong method":   {http.MethodPost, "abc123", nil, http.StatusMethodNotAllowed},
 		"code too short": {http.MethodGet, "abc", nil, http.StatusNotFound},
 		"code too long":  {http.MethodGet, "abcdefghi", nil, http.StatusNotFound},
-		"not found":      {http.MethodGet, "abc123", link.ErrNotFound, http.StatusNotFound},
+		"not found":      {http.MethodGet, "abc123", apperr.ErrNotFound, http.StatusNotFound},
 		"internal error": {http.MethodGet, "abc123", errors.New("boom"), http.StatusInternalServerError},
 	}
 
@@ -409,8 +418,8 @@ func TestGetMetadataErrors(t *testing.T) {
 		"code too short":      {http.MethodGet, "abc", nil, http.StatusNotFound},
 		"code empty":          {http.MethodGet, "", nil, http.StatusNotFound},
 		"code too long":       {http.MethodGet, "abcdefghi", nil, http.StatusNotFound},
-		"not found":           {http.MethodGet, "abc123", link.ErrNotFound, http.StatusNotFound},
-		"wrapped not found":   {http.MethodGet, "abc123", fmt.Errorf("lookup: %w", link.ErrNotFound), http.StatusNotFound},
+		"not found":           {http.MethodGet, "abc123", apperr.ErrNotFound, http.StatusNotFound},
+		"wrapped not found":   {http.MethodGet, "abc123", fmt.Errorf("lookup: %w", apperr.ErrNotFound), http.StatusNotFound},
 		"internal error":      {http.MethodGet, "abc123", errors.New("boom"), http.StatusInternalServerError},
 	}
 

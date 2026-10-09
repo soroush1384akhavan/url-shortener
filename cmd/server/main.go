@@ -1,5 +1,6 @@
 package main
 
+/// $env:DATABASE_URL="host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable"
 import (
 	"context"
 	"errors"
@@ -26,13 +27,37 @@ import (
 func main() {
 	addr := flag.String("addr", ":8080", "server listen address")
 	base := flag.String("base", "http://localhost:8080", "base URL for short links")
+	storageType := flag.String("storage", "memory", "storage backend: memory or postgres")
 
 	flag.Parse()
 
+	// *storageType = "postgres"
+
 	vldt := link.URLValidator{}
-	st := store.NewMemoryStore()
 	gn := shortcode.Base62Generator{}
 
+	var st link.Store
+
+	switch *storageType {
+	case "memory":
+		st = store.NewMemoryStore()
+
+	case "postgres":
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			log.Fatal("DATABASE_URL is required when storage=postgres")
+		}
+
+		pgStore, err := store.NewPostgresStore(dsn)
+		if err != nil {
+			log.Fatalf("failed to initialize postgres store: %v", err)
+		}
+
+		st = pgStore
+
+	default:
+		log.Fatalf("unknown storage type: %s", *storageType)
+	}
 	service := link.NewShortenerService(vldt, st, gn)
 
 	handler := httpapi.NewHandler(service, *base)

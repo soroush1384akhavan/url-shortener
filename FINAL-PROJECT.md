@@ -248,12 +248,12 @@ Same HTTP API; swap in a **durable** `Store` behind the Part 2 interface.
 
 | Done | Pts | Requirement |
 |:----:|:---:|-------------|
-| [ ] | 6 | Persistent `Store` (GORM+DB or file-backed) |
-| [ ] | 5 | Startup load |
-| [ ] | 5 | Create persisted before response |
-| [ ] | 4 | Restart test (temp DB or temp files) |
-| [ ] | 3 | Config selects memory vs persistent store |
-| [ ] | 2 | `-race` clean with persistent store |
+| [✅] | 6 | Persistent `Store` (GORM+DB or file-backed) |
+| [✅] | 5 | Startup load |
+| [✅] | 5 | Create persisted before response |
+| [✅] | 4 | Restart test (temp DB or temp files) |
+| [✅] | 3 | Config selects memory vs persistent store |
+| [✅] | 2 | `-race` clean with persistent store |
 
 ### Decisions you must document (Part 4)
 

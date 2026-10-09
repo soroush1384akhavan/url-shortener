@@ -1,12 +1,15 @@
 package link
 
-import "github.com/soroush1384akhavan/url-shortener/internal/domain"
+import (
+	"context"
+
+	"github.com/soroush1384akhavan/url-shortener/internal/domain"
+)
 
 // for fixig import cycle problem
 type Store interface {
-	FindByURL(string) (*domain.ShortLink, bool)
-	FindByCode(string) (*domain.ShortLink, bool)
-	SaveIfNotExist(*domain.ShortLink) (*domain.ShortLink, error)
-	// Save(*domain.ShortLink) (error)
+	FindByURL(ctx context.Context, normalizedURL string) (*domain.ShortLink, error)
+	FindByCode(ctx context.Context, code string) (*domain.ShortLink, error)
+	SaveIfNotExist(ctx context.Context, sl *domain.ShortLink) (*domain.ShortLink, error)
+	IncrementUsedCount(ctx context.Context, code string) error
 }
-	

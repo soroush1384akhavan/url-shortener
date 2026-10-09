@@ -55,13 +55,13 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/soroush1384akhavan/url-shortener/cmd/server/main.go (0.0%)</option>
+				<option value="file0">github.com/soroush1384akhavan/url-shortener/cmd/server/main.go (49.4%)</option>
 				
-				<option value="file1">github.com/soroush1384akhavan/url-shortener/docs/docs.go (0.0%)</option>
+				<option value="file1">github.com/soroush1384akhavan/url-shortener/docs/docs.go (100.0%)</option>
 				
-				<option value="file2">github.com/soroush1384akhavan/url-shortener/internal/domain/short_link.go (0.0%)</option>
+				<option value="file2">github.com/soroush1384akhavan/url-shortener/internal/domain/short_link.go (100.0%)</option>
 				
-				<option value="file3">github.com/soroush1384akhavan/url-shortener/internal/httpapi/handler.go (100.0%)</option>
+				<option value="file3">github.com/soroush1384akhavan/url-shortener/internal/httpapi/handler.go (95.9%)</option>
 				
 				<option value="file4">github.com/soroush1384akhavan/url-shortener/internal/httpapi/routes.go (100.0%)</option>
 				
@@ -71,9 +71,13 @@
 				
 				<option value="file7">github.com/soroush1384akhavan/url-shortener/internal/link/validate.go (100.0%)</option>
 				
-				<option value="file8">github.com/soroush1384akhavan/url-shortener/internal/shortcode/generator.go (0.0%)</option>
+				<option value="file8">github.com/soroush1384akhavan/url-shortener/internal/shortcode/generator.go (100.0%)</option>
 				
-				<option value="file9">github.com/soroush1384akhavan/url-shortener/internal/store/store.go (0.0%)</option>
+				<option value="file9">github.com/soroush1384akhavan/url-shortener/internal/store/memory.go (97.8%)</option>
+				
+				<option value="file10">github.com/soroush1384akhavan/url-shortener/internal/store/model.go (100.0%)</option>
+				
+				<option value="file11">github.com/soroush1384akhavan/url-shortener/internal/store/postgres.go (93.2%)</option>
 				
 				</select>
 			</div>
@@ -88,34 +92,21 @@
 		<div id="content">
 		
 		<pre class="file" id="file0" style="display: none">package main
+// i refactor structure of this file with help of ai for testing (without testing this package coverge is too low)
 
-// import (
-//         "fmt"
-
-//         "github.com/soroush1384akhavan/url-shortener/internal/link"
-//         "github.com/soroush1384akhavan/url-shortener/internal/shortcode"
-//         "github.com/soroush1384akhavan/url-shortener/internal/store"
-// )
-
-// func main(){
-//         validator := link.URLValidator{}
-//         st := store.NewMemoryStore()
-//         gn := shortcode.Base62Generator{}
-//         shortener := link.NewShortenerService(validator, st, gn)
-//         lnk, err := shortener.Shorten("https://example.com")
-//         if err != nil {
-//                 fmt.Println(err)
-//         }
-
-//         lnk, exists := shortener.Store.FindByURL("hTtps://example.com")
-
-//         fmt.Println(lnk, exists)
-// }
 
 import (
+        "context"
+        "errors"
         "flag"
+        "fmt"
         "log"
+        "net"
         "net/http"
+        "os"
+        "os/signal"
+        "syscall"
+        "time"
 
         _ "github.com/soroush1384akhavan/url-shortener/docs"
         "github.com/soroush1384akhavan/url-shortener/internal/httpapi"
@@ -129,29 +120,135 @@ import (
 // @description Simple URL shortener API
 // @host localhost:8080
 // @BasePath /
+type config struct {
+        addr        string
+        base        string
+        storageType string
+        dsn         string
+}
+
 func main() {
         <span class="cov0" title="0">addr := flag.String("addr", ":8080", "server listen address")
         base := flag.String("base", "http://localhost:8080", "base URL for short links")
+        storageType := flag.String("storage", "memory", "storage backend: memory or postgres")
+        flag.Parse()
 </span>
-        <span class="cov0" title="0">flag.Parse()
+        <span class="cov0" title="0">cfg := config{
+                addr:        *addr,
+                base:        *base,
+                storageType: *storageType,
+                dsn:         os.Getenv("DATABASE_URL"),
+</span>        }
+
+        <span class="cov0" title="0">ctx, stop := signal.NotifyContext(
+                context.Background(),
+                os.Interrupt,
+                syscall.SIGTERM,
+        )
+        defer stop()
 </span>
-        <span class="cov0" title="0">vldt := link.URLValidator{}
-        st := store.NewMemoryStore()
-        gn := shortcode.Base62Generator{}
-</span>
-        <span class="cov0" title="0">service := link.NewShortenerService(vldt, st, gn)
-</span>
-        <span class="cov0" title="0">handler := httpapi.NewHandler(service, *base)
-</span>
-        <span class="cov0" title="0">router := httpapi.NewRouter(handler)
-</span>
-        <span class="cov0" title="0">log.Println("server listening on :", *addr)
-</span>
-        <span class="cov0" title="0">if err := http.ListenAndServe(*addr, router); err != nil </span>{
+        <span class="cov0" title="0">if err := run(ctx, cfg); err != nil </span>{
                 <span class="cov0" title="0">log.Fatal(err)
 </span>        }
 }
-</pre>
+
+func newStore(storageType, dsn string) (link.Store, error) {
+        <span class="cov8" title="1">switch storageType </span>{
+        case "memory":
+                <span class="cov8" title="1">return store.NewMemoryStore(), nil</span>
+
+        case "postgres":
+                <span class="cov8" title="1">if dsn == "" </span>{
+                        <span class="cov8" title="1">return nil, errors.New("DATABASE_URL is required when storage=postgres")
+</span>                }
+
+                <span class="cov8" title="1">st, err := store.NewPostgresStore(dsn)
+                if err != nil </span>{
+                        <span class="cov8" title="1">return nil, fmt.Errorf("failed to initialize postgres store: %w", err)
+</span>                }
+                <span class="cov0" title="0">return st, nil</span>
+
+        default:
+                <span class="cov8" title="1">return nil, fmt.Errorf("unknown storage type: %s", storageType)</span>
+        }
+}
+
+func newServer(cfg config) (*http.Server, error) {
+        <span class="cov8" title="1">st, err := newStore(cfg.storageType, cfg.dsn)
+        if err != nil </span>{
+                <span class="cov8" title="1">return nil, err
+</span>        }
+
+        <span class="cov8" title="1">service := link.NewShortenerService(
+                link.URLValidator{},
+                st,
+                shortcode.Base62Generator{},
+        )
+</span>
+        <span class="cov8" title="1">handler := httpapi.NewHandler(service, cfg.base)
+        router := httpapi.NewRouter(handler)
+</span>
+        <span class="cov8" title="1">return &amp;http.Server{
+                Addr:              cfg.addr,
+                Handler:           router,
+                ReadHeaderTimeout: 2 * time.Second,
+                ReadTimeout:       5 * time.Second,
+                WriteTimeout:      5 * time.Second,
+                IdleTimeout:       30 * time.Second,
+        }, nil</span>
+}
+
+func run(ctx context.Context, cfg config) error {
+        <span class="cov8" title="1">server, err := newServer(cfg)
+        if err != nil </span>{
+                <span class="cov8" title="1">return err
+</span>        }
+
+        <span class="cov0" title="0">listener, err := net.Listen("tcp", cfg.addr)
+        if err != nil </span>{
+                <span class="cov0" title="0">return fmt.Errorf("failed to listen: %w", err)
+</span>        }
+
+        <span class="cov0" title="0">return serve(ctx, server, listener)</span>
+}
+
+func serve(ctx context.Context, server *http.Server, listener net.Listener) error {
+        <span class="cov8" title="1">serverErr := make(chan error, 1)
+</span>
+        <span class="cov8" title="1">go func() </span>{
+                <span class="cov8" title="1">log.Printf("server listening on %s", listener.Addr())
+                serverErr &lt;- server.Serve(listener)
+</span>        }()
+
+        <span class="cov8" title="1">select </span>{
+        case err := &lt;-serverErr:
+                <span class="cov0" title="0">if errors.Is(err, http.ErrServerClosed) </span>{
+                        <span class="cov0" title="0">return nil
+</span>                }
+                <span class="cov0" title="0">return fmt.Errorf("server failed: %w", err)</span>
+
+        case &lt;-ctx.Done():
+                <span class="cov8" title="1">log.Println("shutting down...")</span>
+        }
+
+        <span class="cov8" title="1">shutdownCtx, cancel := context.WithTimeout(
+                context.Background(),
+                10*time.Second,
+        )
+        defer cancel()
+</span>
+        <span class="cov8" title="1">if err := server.Shutdown(shutdownCtx); err != nil </span>{
+                <span class="cov0" title="0">_ = server.Close()
+                return fmt.Errorf("graceful shutdown failed: %w", err)
+</span>        }
+
+        <span class="cov8" title="1">if err := &lt;-serverErr; err != nil &amp;&amp; !errors.Is(err, http.ErrServerClosed) </span>{
+                <span class="cov0" title="0">return fmt.Errorf("server failed: %w", err)
+</span>        }
+
+        <span class="cov8" title="1">log.Println("server stopped")
+        return nil</span>
+}</pre>
 		
 		<pre class="file" id="file1" style="display: none">// Package docs Code generated by swaggo/swag. DO NOT EDIT
 package docs
@@ -209,6 +306,47 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/links/{code}": {
+            "get": {
+                "description": "Returns metadata for a shortened link by code",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "links"
+                ],
+                "summary": "Get link metadata",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Short code",
+                        "name": "code",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httpapi.GetMetadataResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Link not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/{code}": {
             "get": {
                 "description": "Redirects a short code to its original long URL",
@@ -240,6 +378,17 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "httpapi.GetMetadataResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
         "httpapi.shortenRequest": {
             "type": "object",
             "properties": {
@@ -277,7 +426,7 @@ var SwaggerInfo = &amp;swag.Spec{
 }
 
 func init() {
-        <span class="cov0" title="0">swag.Register(SwaggerInfo.InstanceName(), SwaggerInfo)
+        <span class="cov8" title="1">swag.Register(SwaggerInfo.InstanceName(), SwaggerInfo)
 </span>}
 </pre>
 		
@@ -291,16 +440,17 @@ type ShortLink struct {
         Code      string
         LongURL   string
         CreatedAt time.Time
-        // UsedCount int //maybe it will burn database for a simple read ??!
+        UsedCount uint64 //maybe it will burn database for a simple read ??!
 }
 
 func NewShortLink(code, longURL string) *ShortLink {
-        <span class="cov0" title="0">return &amp;ShortLink{
+        <span class="cov8" title="1">return &amp;ShortLink{
                 Code:      code,
                 LongURL:   longURL,
                 CreatedAt: time.Now().UTC(),
 </span>        }
-}</pre>
+}
+</pre>
 		
 		<pre class="file" id="file3" style="display: none">package httpapi
 
@@ -310,7 +460,9 @@ import (
         "log"
         "net/http"
         "strings"
+        "time"
 
+        "github.com/soroush1384akhavan/url-shortener/internal/apperr"
         "github.com/soroush1384akhavan/url-shortener/internal/link"
 )
 
@@ -350,6 +502,8 @@ func (h *Handler) Shorten(w http.ResponseWriter, r *http.Request) {
                 return
 </span>        }
 
+        <span class="cov8" title="1">ctx := r.Context()
+</span>
         <span class="cov8" title="1">r.Body = http.MaxBytesReader(w, r.Body, 1&lt;&lt;20)
 </span>
         <span class="cov8" title="1">var req shortenRequest
@@ -363,7 +517,7 @@ func (h *Handler) Shorten(w http.ResponseWriter, r *http.Request) {
                 return</span>
         }
 
-        <span class="cov8" title="1">sl, err := h.service.Shorten(req.URL)
+        <span class="cov8" title="1">sl, err := h.service.Shorten(ctx, req.URL)
         if err != nil </span>{
                 <span class="cov8" title="1">if errors.Is(err, link.ErrInvalidURL) </span>{
                         <span class="cov8" title="1">http.Error(w, err.Error(), http.StatusBadRequest)
@@ -399,7 +553,8 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
                 <span class="cov8" title="1">http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
                 return
 </span>        }
-
+        <span class="cov8" title="1">ctx := r.Context()
+</span>
         <span class="cov8" title="1">code := r.PathValue("code")
 </span>
         <span class="cov8" title="1">if len(code) &lt; 6 || len(code) &gt; 8 </span>{
@@ -407,9 +562,59 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
                 return
 </span>        }
 
-        <span class="cov8" title="1">sl, err := h.service.GetByCode(code)
+        <span class="cov8" title="1">sl, err := h.service.GetByCode(ctx, code)
         if err != nil </span>{
-                <span class="cov8" title="1">if errors.Is(err, link.ErrNotFound) </span>{
+                <span class="cov8" title="1">if errors.Is(err, apperr.ErrNotFound) </span>{
+                        <span class="cov8" title="1">http.Error(w, "link not found", http.StatusNotFound)
+                        return
+</span>                }
+
+                <span class="cov8" title="1">log.Printf("get by code failed: %v", err)
+                http.Error(w, "internal server error", http.StatusInternalServerError)
+                return</span>
+        }
+        <span class="cov8" title="1">if err := h.service.IncrementUsedCount(ctx, code); err != nil </span>{
+                <span class="cov0" title="0">log.Printf("increment used count failed: %v", err)
+                http.Error(w, "internal server error", http.StatusInternalServerError)
+                return
+</span>        }
+
+        <span class="cov8" title="1">http.Redirect(w, r, sl.LongURL, http.StatusFound)</span>
+}
+
+type GetMetadataResponse struct {
+        URL       string    `json:"url"`
+        CreatedAt time.Time `json:"created_at"`
+}
+
+// GetMetadata godoc
+// @Summary Get link metadata
+// @Description Returns metadata for a shortened link by code
+// @Tags links
+// @Produce json
+// @Param code path string true "Short code"
+// @Success 200 {object} GetMetadataResponse
+// @Failure 404 {string} string "Link not found"
+// @Failure 500 {string} string "Internal server error"
+// @Router /api/v1/links/{code} [get]
+func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
+        <span class="cov8" title="1">if r.Method != http.MethodGet </span>{
+                <span class="cov8" title="1">http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+                return
+</span>        }
+
+        <span class="cov8" title="1">ctx := r.Context()
+</span>
+        <span class="cov8" title="1">code := r.PathValue("code")
+</span>
+        <span class="cov8" title="1">if len(code) &lt; 6 || len(code) &gt; 8 </span>{
+                <span class="cov8" title="1">http.Error(w, "link not found", http.StatusNotFound)
+                return
+</span>        }
+
+        <span class="cov8" title="1">sl, err := h.service.GetByCode(ctx, code)
+        if err != nil </span>{
+                <span class="cov8" title="1">if errors.Is(err, apperr.ErrNotFound) </span>{
                         <span class="cov8" title="1">http.Error(w, "link not found", http.StatusNotFound)
                         return
 </span>                }
@@ -419,7 +624,16 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
                 return</span>
         }
 
-        <span class="cov8" title="1">http.Redirect(w, r, sl.LongURL, http.StatusFound)</span>
+        <span class="cov8" title="1">response := GetMetadataResponse{
+                URL:       sl.LongURL,
+                CreatedAt: sl.CreatedAt,
+</span>        }
+
+        <span class="cov8" title="1">w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusOK)
+        if err := json.NewEncoder(w).Encode(response); err != nil </span>{
+                <span class="cov0" title="0">log.Printf("failed to encode GetMetaData response: %v", err)
+</span>        }
 
 }
 </pre>
@@ -436,8 +650,8 @@ func NewRouter(h *Handler) http.Handler {
 </span>
         <span class="cov8" title="1">mux.HandleFunc("POST /api/shorten", h.Shorten)
         mux.HandleFunc("GET /{code}", h.Redirect)
+        mux.HandleFunc("GET /api/v1/links/{code}", h.GetMetadata)
 </span>
-
         <span class="cov8" title="1">mux.Handle("/swagger/", httpSwagger.WrapHandler)
 </span>
         <span class="cov8" title="1">return mux
@@ -533,6 +747,7 @@ func dropEmptyQuery(u *url.URL) {
 		<pre class="file" id="file6" style="display: none">package link
 
 import (
+        "context"
         "errors"
 
         // "github.com/soroush1384akhavan/url-shortener/internal/store"
@@ -545,8 +760,9 @@ import (
 const maxAttempts = 20
 
 type Shortener interface {
-        Shorten(rawURL string) (*domain.ShortLink, error)
-        GetByCode(code string) (*domain.ShortLink, error)
+        Shorten(context.Context, string) (*domain.ShortLink, error)
+        GetByCode(context.Context, string) (*domain.ShortLink, error)
+        IncrementUsedCount(context.Context, string) error
 }
 
 type ShortenerService struct {
@@ -563,7 +779,7 @@ func NewShortenerService(vld Validator, st Store, gn shortcode.Generator) *Short
 </span>        }
 }
 
-func (s *ShortenerService) Shorten(rawURL string) (*domain.ShortLink, error) {
+func (s *ShortenerService) Shorten(ctx context.Context, rawURL string) (*domain.ShortLink, error) {
         // validate
         <span class="cov8" title="1">if err := s.Validator.Validate(rawURL); err != nil </span>{
                 <span class="cov8" title="1">return nil, err
@@ -576,9 +792,15 @@ func (s *ShortenerService) Shorten(rawURL string) (*domain.ShortLink, error) {
 </span>        }
 
         // check if URL already exists
-        <span class="cov8" title="1">if lnk, ok := s.Store.FindByURL(normalizedURL); ok </span>{
-                <span class="cov8" title="1">return lnk, nil
-</span>        }
+        <span class="cov8" title="1">lnk, err := s.Store.FindByURL(ctx, normalizedURL)
+        switch </span>{
+        case err == nil:
+                <span class="cov8" title="1">return lnk, nil</span>
+        case errors.Is(err, apperr.ErrNotFound):<span class="cov8" title="1"></span>
+                // its new do nothing
+        default:
+                <span class="cov8" title="1">return nil, err</span>
+        }
 
         // generate code and collision handling
         <span class="cov8" title="1">for i := 0; i &lt; maxAttempts; i++ </span>{
@@ -587,7 +809,7 @@ func (s *ShortenerService) Shorten(rawURL string) (*domain.ShortLink, error) {
                         <span class="cov8" title="1">return nil, err
 </span>                }
 
-                <span class="cov8" title="1">lnk, err := s.Store.SaveIfNotExist(domain.NewShortLink(code, normalizedURL))
+                <span class="cov8" title="1">lnk, err := s.Store.SaveIfNotExist(ctx, domain.NewShortLink(code, normalizedURL))
                 if errors.Is(err, apperr.ErrCodeCollision) </span>{
                         <span class="cov8" title="1">continue</span>
                 }
@@ -598,17 +820,27 @@ func (s *ShortenerService) Shorten(rawURL string) (*domain.ShortLink, error) {
         <span class="cov8" title="1">return nil, ErrCodeGenerationExhausted</span>
 }
 
-func (s *ShortenerService) GetByCode(code string) (*domain.ShortLink, error) {
+func (s *ShortenerService) GetByCode(ctx context.Context, code string) (*domain.ShortLink, error) {
 
-        <span class="cov8" title="1">ShortLink, exists := s.Store.FindByCode(code)
+        <span class="cov8" title="1">ShortLink, err := s.Store.FindByCode(ctx, code)
 </span>
-        <span class="cov8" title="1">if exists </span>{
-                <span class="cov8" title="1">return ShortLink, nil
-</span>        }
+        <span class="cov8" title="1">switch </span>{
+        case err == nil:
+                <span class="cov8" title="1">return ShortLink, nil</span>
+        case errors.Is(err, apperr.ErrNotFound):
+                <span class="cov8" title="1">return nil, apperr.ErrNotFound</span>
 
-        <span class="cov8" title="1">return nil, ErrNotFound</span>
+        default:
+                <span class="cov8" title="1">return nil, err</span>
+        }
 
 }
+
+func (s *ShortenerService) IncrementUsedCount(ctx context.Context, code string) error {
+        <span class="cov8" title="1">return s.Store.IncrementUsedCount(ctx, code)
+</span>
+}
+
 </pre>
 		
 		<pre class="file" id="file7" style="display: none">package link
@@ -677,19 +909,19 @@ type Generator interface {
 type Base62Generator struct{}
 
 func (b Base62Generator) GenerateCode() (string, error) {
-        <span class="cov0" title="0">result := make([]byte, length)
+        <span class="cov8" title="1">result := make([]byte, length)
         max := big.NewInt(int64(len(base62)))
 </span>
-        <span class="cov0" title="0">for i := range result </span>{
-                <span class="cov0" title="0">n, err := rand.Int(rand.Reader, max)
+        <span class="cov8" title="1">for i := range result </span>{
+                <span class="cov8" title="1">n, err := rand.Int(rand.Reader, max)
                 if err != nil </span>{
-                        <span class="cov0" title="0">return "", fmt.Errorf("generate short code: %w", err)
+                        <span class="cov8" title="1">return "", fmt.Errorf("generate short code: %w", err)
 </span>                }
 
-                <span class="cov0" title="0">result[i] = base62[n.Int64()]</span>
+                <span class="cov8" title="1">result[i] = base62[n.Int64()]</span>
         }
 
-        <span class="cov0" title="0">return string(result), nil</span>
+        <span class="cov8" title="1">return string(result), nil</span>
 }
 </pre>
 		
@@ -697,6 +929,7 @@ func (b Base62Generator) GenerateCode() (string, error) {
 
 import (
         // "errors"
+        "context"
         "sync"
 
         "github.com/soroush1384akhavan/url-shortener/internal/apperr"
@@ -710,64 +943,216 @@ type MemoryStore struct {
 }
 
 func NewMemoryStore() *MemoryStore {
-        <span class="cov0" title="0">return &amp;MemoryStore{
+        <span class="cov8" title="1">return &amp;MemoryStore{
                 codeLink: make(map[string]*domain.ShortLink),
                 urlLink:  make(map[string]*domain.ShortLink),
 </span>        }
 }
-
-func (s *MemoryStore) FindByURL(normalizedURL string) (*domain.ShortLink, bool) {
-        <span class="cov0" title="0">s.mu.RLock()
+func (s *MemoryStore) FindByURL(_ context.Context, normalizedURL string) (*domain.ShortLink, error) {
+        <span class="cov8" title="1">s.mu.RLock()
         lnk, ok := s.urlLink[normalizedURL]
         s.mu.RUnlock()
 </span>
-        <span class="cov0" title="0">if !ok </span>{
-                <span class="cov0" title="0">return nil, false
+        <span class="cov8" title="1">if !ok </span>{
+                <span class="cov8" title="1">return nil, apperr.ErrNotFound
 </span>        }
-
-        <span class="cov0" title="0">return lnk, ok</span>
+        <span class="cov8" title="1">return lnk, nil</span>
 }
 
-func (s *MemoryStore) FindByCode(code string) (*domain.ShortLink, bool) {
-        <span class="cov0" title="0">s.mu.RLock()
+func (s *MemoryStore) FindByCode(_ context.Context, code string) (*domain.ShortLink, error) {
+        <span class="cov8" title="1">s.mu.RLock()
         lnk, ok := s.codeLink[code]
         s.mu.RUnlock()
 </span>
-        <span class="cov0" title="0">if !ok </span>{
-                <span class="cov0" title="0">return nil, false
+        <span class="cov8" title="1">if !ok </span>{
+                <span class="cov8" title="1">return nil, apperr.ErrNotFound
 </span>        }
 
-        <span class="cov0" title="0">return lnk, ok</span>
+        <span class="cov8" title="1">return lnk, nil</span>
 }
 
-func (s *MemoryStore) SaveIfNotExist(shortLink *domain.ShortLink) (*domain.ShortLink, error) { // between check and save we dont have any lock so its have to be atomic
-        <span class="cov0" title="0">s.mu.Lock()
+func (s *MemoryStore) SaveIfNotExist(_ context.Context, shortLink *domain.ShortLink) (*domain.ShortLink, error) { // between check and save we dont have any lock so its have to be atomic
+        <span class="cov8" title="1">s.mu.Lock()
         defer s.mu.Unlock()
 </span>
-        <span class="cov0" title="0">if lnk, ok := s.urlLink[shortLink.LongURL]; ok </span>{
-                <span class="cov0" title="0">return lnk, nil
+        <span class="cov8" title="1">if lnk, ok := s.urlLink[shortLink.LongURL]; ok </span>{
+                <span class="cov8" title="1">return lnk, nil
 </span>        }
 
-        <span class="cov0" title="0">if _, ok := s.codeLink[shortLink.Code]; ok </span>{
-                <span class="cov0" title="0">return nil, apperr.ErrCodeCollision
+        <span class="cov8" title="1">if _, ok := s.codeLink[shortLink.Code]; ok </span>{
+                <span class="cov8" title="1">return nil, apperr.ErrCodeCollision
 </span>
         }
 
-        <span class="cov0" title="0">s.codeLink[shortLink.Code] = shortLink
+        <span class="cov8" title="1">s.codeLink[shortLink.Code] = shortLink
         s.urlLink[shortLink.LongURL] = shortLink
         return shortLink, nil</span>
 }
 
-// im not sure im going to use this or not (Probably not)
-func (s *MemoryStore) Save(shortLink *domain.ShortLink) error {
-        <span class="cov0" title="0">s.mu.Lock()
+func (s *MemoryStore) IncrementUsedCount(_ context.Context, code string) error {
+        <span class="cov8" title="1">s.mu.Lock()
         defer s.mu.Unlock()
 </span>
-        <span class="cov0" title="0">s.codeLink[shortLink.Code] = shortLink
-        s.urlLink[shortLink.LongURL] = shortLink
+        <span class="cov8" title="1">lnk, ok := s.codeLink[code]
+        if !ok </span>{
+                <span class="cov0" title="0">return apperr.ErrNotFound
+</span>        }
+
+        <span class="cov8" title="1">lnk.UsedCount++
 </span>
-        <span class="cov0" title="0">return nil
+        <span class="cov8" title="1">return nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file10" style="display: none">package store
+
+import (
+        "crypto/sha256"
+        "encoding/base64"
+        "time"
+
+        "github.com/soroush1384akhavan/url-shortener/internal/domain"
+)
+
+type ShortLinkModel struct {
+        Code          string    `gorm:"type:varchar(8);primaryKey;not null"`
+        NormalizedURL string    `gorm:"type:text;not null;uniqueIndex:idx_url_identity,priority:2"`
+        URLHash       string    `gorm:"type:varchar(10);not null;uniqueIndex:idx_url_identity,priority:1"`
+        CreatedAt     time.Time `gorm:"not null"`
+        UsedCount     int64     `gorm:"not null;default:0"`
+}
+
+func (ShortLinkModel) TableName() string {
+        <span class="cov8" title="1">return "short_links"
 </span>}
+
+func toModel(sl *domain.ShortLink) ShortLinkModel {
+        <span class="cov8" title="1">return ShortLinkModel{
+                Code:          sl.Code,
+                NormalizedURL: sl.LongURL,
+                URLHash:       hashURL(sl.LongURL),
+                CreatedAt:     sl.CreatedAt,
+                UsedCount:     int64(sl.UsedCount),
+</span>        }
+}
+
+func (m ShortLinkModel) toDomain() *domain.ShortLink {
+        <span class="cov8" title="1">return &amp;domain.ShortLink{
+                Code:      m.Code,
+                LongURL:   m.NormalizedURL,
+                CreatedAt: m.CreatedAt,
+                UsedCount: uint64(m.UsedCount),
+</span>        }
+}
+
+func hashURL(u string) string {
+        <span class="cov8" title="1">sum := sha256.Sum256([]byte(u))
+        return base64.RawURLEncoding.EncodeToString(sum[:])[:10]
+</span>}
+</pre>
+		
+		<pre class="file" id="file11" style="display: none">package store
+
+import (
+        "context"
+        "errors"
+
+        "github.com/jackc/pgx/v5/pgconn"
+        "gorm.io/driver/postgres"
+        "gorm.io/gorm"
+        "gorm.io/gorm/clause"
+
+        "github.com/soroush1384akhavan/url-shortener/internal/apperr"
+        "github.com/soroush1384akhavan/url-shortener/internal/domain"
+)
+
+type PostgresStore struct {
+        db *gorm.DB
+}
+
+// AI help me with this I didnt know anything about gorm so i have t learn ablout it first :)
+func NewPostgresStore(dsn string) (*PostgresStore, error) {
+        <span class="cov8" title="1">db, err := gorm.Open(postgres.Open(dsn), &amp;gorm.Config{})
+        if err != nil </span>{
+                <span class="cov8" title="1">return nil, err
+</span>        }
+
+        <span class="cov8" title="1">if err := db.AutoMigrate(&amp;ShortLinkModel{}); err != nil </span>{
+                <span class="cov0" title="0">return nil, err
+</span>        }
+
+        <span class="cov8" title="1">return &amp;PostgresStore{db: db}, nil</span>
+}
+
+func (s *PostgresStore) FindByURL(ctx context.Context, normalizedURL string) (*domain.ShortLink, error) {
+        <span class="cov8" title="1">var m ShortLinkModel
+        err := s.db.WithContext(ctx).
+                Where("url_hash = ? AND normalized_url = ?", hashURL(normalizedURL), normalizedURL).
+                Take(&amp;m).Error
+        if errors.Is(err, gorm.ErrRecordNotFound) </span>{
+                <span class="cov8" title="1">return nil, apperr.ErrNotFound
+</span>        }
+        <span class="cov8" title="1">if err != nil </span>{
+                <span class="cov8" title="1">return nil, err
+</span>        }
+        <span class="cov8" title="1">return m.toDomain(), nil</span>
+}
+
+func (s *PostgresStore) FindByCode(ctx context.Context, code string) (*domain.ShortLink, error) {
+        <span class="cov8" title="1">var m ShortLinkModel
+        err := s.db.WithContext(ctx).
+                Where("code = ?", code).
+                Take(&amp;m).Error
+        if errors.Is(err, gorm.ErrRecordNotFound) </span>{
+                <span class="cov0" title="0">return nil, apperr.ErrNotFound
+</span>        }
+        <span class="cov8" title="1">if err != nil </span>{
+                <span class="cov0" title="0">return nil, err
+</span>        }
+        <span class="cov8" title="1">return m.toDomain(), nil</span>
+}
+
+func (s *PostgresStore) SaveIfNotExist(ctx context.Context, sl *domain.ShortLink) (*domain.ShortLink, error) {
+        <span class="cov8" title="1">m := toModel(sl)
+</span>
+        <span class="cov8" title="1">res := s.db.WithContext(ctx).
+                Clauses(clause.OnConflict{
+                        Columns:   []clause.Column{{Name: "url_hash"}, {Name: "normalized_url"}},
+                        DoNothing: true,
+                }).
+                Create(&amp;m)
+</span>
+        <span class="cov8" title="1">if res.Error != nil </span>{
+                <span class="cov8" title="1">var pgErr *pgconn.PgError
+                if errors.As(res.Error, &amp;pgErr) &amp;&amp; pgErr.Code == "23505" </span>{ // I search this by ai
+                        <span class="cov8" title="1">return nil, apperr.ErrCodeCollision
+</span>                }
+                <span class="cov8" title="1">return nil, res.Error</span>
+        }
+
+        <span class="cov8" title="1">if res.RowsAffected == 0 </span>{
+                <span class="cov8" title="1">return s.FindByURL(ctx, sl.LongURL)
+</span>        }
+
+        <span class="cov8" title="1">return m.toDomain(), nil</span>
+}
+
+func (s *PostgresStore) IncrementUsedCount(ctx context.Context, code string) error {
+        <span class="cov8" title="1">res := s.db.WithContext(ctx).
+                Model(&amp;ShortLinkModel{}).
+                Where("code = ?", code).
+                Update("used_count", gorm.Expr("used_count + 1")) // for being atomic in db
+</span>
+        <span class="cov8" title="1">if res.Error != nil </span>{
+                <span class="cov8" title="1">return res.Error
+</span>        }
+
+        <span class="cov8" title="1">if res.RowsAffected == 0 </span>{
+                <span class="cov8" title="1">return apperr.ErrNotFound
+</span>        }
+
+        <span class="cov8" title="1">return nil</span>
+}
 </pre>
 		
 		</div>

@@ -1,6 +1,7 @@
 package link
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -20,7 +21,7 @@ func BenchmarkShortenNewURL(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		if _, err := s.Shorten(urls[i]); err != nil {
+		if _, err := s.Shorten(context.Background(), urls[i]); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -30,14 +31,14 @@ func BenchmarkShortenExistingURL(b *testing.B) {
 	s := NewShortenerService(URLValidator{}, store.NewMemoryStore(), shortcode.Base62Generator{})
 	const rawURL = "https://example.com/page"
 
-	if _, err := s.Shorten(rawURL); err != nil {
+	if _, err := s.Shorten(context.Background(), rawURL); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := s.Shorten(rawURL); err != nil {
+		if _, err := s.Shorten(context.Background(), rawURL); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -54,7 +55,7 @@ func BenchmarkShortenParallel(b *testing.B) {
 		for pb.Next() {
 			i++
 			u := fmt.Sprintf("https://example.com/p/%p/%d", pb, i)
-			if _, err := s.Shorten(u); err != nil {
+			if _, err := s.Shorten(context.Background(), u); err != nil {
 				b.Error(err)
 				return
 			}
@@ -65,7 +66,7 @@ func BenchmarkShortenParallel(b *testing.B) {
 func BenchmarkGetByCode(b *testing.B) {
 	s := NewShortenerService(URLValidator{}, store.NewMemoryStore(), shortcode.Base62Generator{})
 
-	lnk, err := s.Shorten("https://example.com/page")
+	lnk, err := s.Shorten(context.Background(), "https://example.com/page")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func BenchmarkGetByCode(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := s.GetByCode(code); err != nil {
+		if _, err := s.GetByCode(context.Background(), code); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -83,7 +84,7 @@ func BenchmarkGetByCode(b *testing.B) {
 func BenchmarkGetByCodeParallel(b *testing.B) {
 	s := NewShortenerService(URLValidator{}, store.NewMemoryStore(), shortcode.Base62Generator{})
 
-	lnk, err := s.Shorten("https://example.com/page")
+	lnk, err := s.Shorten(context.Background(), "https://example.com/page")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -94,8 +95,8 @@ func BenchmarkGetByCodeParallel(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := s.GetByCode(code); err != nil {
-				b.Error(err) 
+			if _, err := s.GetByCode(context.Background(), code); err != nil {
+				b.Error(err)
 				return
 			}
 		}

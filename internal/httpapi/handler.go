@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/soroush1384akhavan/url-shortener/internal/apperr"
 	"github.com/soroush1384akhavan/url-shortener/internal/link"
 )
 
@@ -47,6 +48,8 @@ func (h *Handler) Shorten(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var req shortenRequest
@@ -60,7 +63,7 @@ func (h *Handler) Shorten(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sl, err := h.service.Shorten(req.URL)
+	sl, err := h.service.Shorten(ctx, req.URL)
 	if err != nil {
 		if errors.Is(err, link.ErrInvalidURL) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -96,6 +99,7 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	ctx := r.Context()
 
 	code := r.PathValue("code")
 
@@ -104,9 +108,9 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sl, err := h.service.GetByCode(code)
+	sl, err := h.service.GetByCode(ctx, code)
 	if err != nil {
-		if errors.Is(err, link.ErrNotFound) {
+		if errors.Is(err, apperr.ErrNotFound) {
 			http.Error(w, "link not found", http.StatusNotFound)
 			return
 		}
@@ -115,9 +119,13 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	if err := h.service.IncrementUsedCount(ctx, code); err != nil {
+		log.Printf("increment used count failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	http.Redirect(w, r, sl.LongURL, http.StatusFound)
-
 }
 
 type GetMetadataResponse struct {
@@ -141,6 +149,8 @@ func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+
 	code := r.PathValue("code")
 
 	if len(code) < 6 || len(code) > 8 {
@@ -148,9 +158,9 @@ func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sl, err := h.service.GetByCode(code)
+	sl, err := h.service.GetByCode(ctx, code)
 	if err != nil {
-		if errors.Is(err, link.ErrNotFound) {
+		if errors.Is(err, apperr.ErrNotFound) {
 			http.Error(w, "link not found", http.StatusNotFound)
 			return
 		}

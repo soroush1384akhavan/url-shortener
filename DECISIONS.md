@@ -1441,3 +1441,312 @@ Specifically, I asked for clarification about:
 - interpretation of profiling output
 
 The benchmark and application code were written and integrated manually.
+
+
+
+
+## Part 4 — Persistence
+
+### Storage choice
+
+For the durable storage implementation, I chose PostgreSQL with GORM.
+
+The application now supports two storage backends:
+
+- `memory` — the existing in-memory store.
+- `postgres` — a persistent PostgreSQL-backed store.
+
+The storage backend is selected at startup using the `-storage` flag.
+
+Examples:
+
+```bash
+go run ./cmd/server -storage=memory
+go run ./cmd/server -storage=postgres
+```
+
+For PostgreSQL, the connection string is read from the `DATABASE_URL` environment variable instead of being hard-coded in the application.
+
+Example:
+
+```text
+host=127.0.0.1 user=urlshortener password=urlshortener dbname=urlshortener port=5434 sslmode=disable
+```
+
+PostgreSQL is run locally using Docker Compose. A Docker volume is used so database data survives container/application restarts.
+
+I chose PostgreSQL because it provides durable persistence, database-level concurrency control, unique constraints, atomic updates, and is also suitable for a future multi-instance deployment.
+
+GORM is used as the database access layer and PostgreSQL driver.
+
+### Store interface and context propagation
+
+The Store abstraction was changed so storage operations accept `context.Context` and return storage errors explicitly.
+
+The application flow is now:
+
+```text
+HTTP request
+    ↓
+request context
+    ↓
+Handler
+    ↓
+Service
+    ↓
+Store
+    ↓
+PostgreSQL / MemoryStore
+```
+
+The HTTP handlers use `r.Context()` and pass it through the service layer to the store.
+
+The in-memory store currently does not need the context, so it accepts it but ignores it.
+
+The PostgreSQL store uses `db.WithContext(ctx)` for database operations.
+
+This allows database queries to be cancelled if the HTTP request is cancelled or its context expires.
+
+The Store interface also exposes an atomic usage-count operation so callers do not directly mutate stored links:
+
+```text
+IncrementUsedCount(ctx, code)
+```
+
+### Schema and model
+
+Persistent short links are stored in the `short_links` table.
+
+The model contains:
+
+```text
+code
+normalized_url
+url_hash
+created_at
+used_count
+```
+
+The main constraints are:
+
+```text
+code
+    PRIMARY KEY
+
+normalized_url
+    NOT NULL
+
+url_hash
+    CHAR(10)
+    NOT NULL
+
+(url_hash, normalized_url)
+    UNIQUE
+
+created_at
+    NOT NULL
+
+used_count
+    NOT NULL
+    DEFAULT 0
+```
+
+`code` is used as the primary key because short codes are already unique, immutable identifiers and are frequently used for redirect lookups.
+
+No additional numeric ID is required for the current access patterns.
+
+### URL hash and indexing
+
+The normalized URL is still stored in full.
+
+A shortened hash of the normalized URL is additionally stored as `url_hash`. It is used as a compact lookup prefix.
+
+The lookup is performed using both values:
+
+```text
+WHERE url_hash = ?
+  AND normalized_url = ?
+```
+
+The hash is not treated as the identity of a URL because truncated hashes can collide.
+
+The unique constraint is therefore:
+
+```text
+UNIQUE(url_hash, normalized_url)
+```
+
+rather than making `url_hash` itself unique.
+
+This allows two different URLs to have the same truncated hash while still preventing the same normalized URL from being stored twice.
+
+A separate index on only `url_hash` was initially considered, but was removed because the composite B-tree index on `(url_hash, normalized_url)` already supports lookups using `url_hash` as its leading column. Keeping both indexes would add unnecessary storage and write overhead.
+
+### Migrations
+
+The PostgreSQL store uses GORM `AutoMigrate` for the current schema.
+
+When the PostgreSQL store is initialized, GORM ensures that the `short_links` table and its required constraints exist.
+
+For this take-home implementation this keeps database setup simple and makes the application easy to run locally.
+
+For a larger production system I would prefer explicit, versioned migrations rather than relying only on `AutoMigrate`, so schema changes can be reviewed, ordered, rolled forward, and rolled back predictably.
+
+### Idempotency and persistence
+
+Part 1 requires shortening the same normalized URL to return the same short code.
+
+The persistent implementation preserves this behavior across application restarts.
+
+Before generating a new link, the service checks the store for the normalized URL.
+
+At the database level, the unique constraint on `(url_hash, normalized_url)` also protects this invariant against concurrent inserts.
+
+`SaveIfNotExist` uses PostgreSQL conflict handling. If another request has already inserted the same normalized URL, the duplicate insert is not created and the existing link is read and returned instead.
+
+Therefore:
+
+```text
+same normalized URL
+    ↓
+same persisted database row
+    ↓
+same short code
+```
+
+This remains true after the application is restarted because the mapping is stored in PostgreSQL rather than application memory.
+
+A restart/persistence integration test creates a link using one `PostgresStore` instance, creates a second store instance using the same database, and verifies that the previously created short code and URL can still be retrieved.
+
+### Short-code collisions
+
+`code` is a primary key, so PostgreSQL enforces uniqueness.
+
+If a generated code already belongs to another URL, PostgreSQL returns a unique-constraint violation.
+
+The PostgreSQL store translates that database error into `ErrCodeCollision`.
+
+The service already understands this application error and retries code generation up to the configured maximum number of attempts.
+
+This keeps PostgreSQL-specific errors out of the service layer.
+
+### Crash safety and atomicity
+
+A successful shorten request is returned only after `SaveIfNotExist` has completed successfully.
+
+For PostgreSQL this means the insert has been accepted by the database before the HTTP handler can return the successful response.
+
+Database constraints are used instead of process-local mutexes for persistent concurrency control.
+
+In particular:
+
+- `code` uniqueness is enforced by the primary key.
+- URL idempotency is enforced by the composite unique constraint.
+- concurrent URL inserts are handled with database conflict handling.
+- PostgreSQL provides transaction/locking/MVCC behavior for concurrent database access.
+
+Unlike `MemoryStore`, `PostgresStore` does not use a Go mutex. A process-local mutex would not protect data across multiple application instances anyway and would unnecessarily serialize database requests.
+
+### Used count atomicity
+
+`UsedCount` is persisted in PostgreSQL as a `BIGINT` with a default value of zero.
+
+Redirect usage is incremented inside the database using an expression equivalent to:
+
+```sql
+UPDATE short_links
+SET used_count = used_count + 1
+WHERE code = ?;
+```
+
+The count is not implemented as:
+
+```text
+SELECT count
+count++
+UPDATE count
+```
+
+because concurrent requests could read the same old value and lose an update.
+
+Performing the increment directly in PostgreSQL makes the operation atomic from the application's point of view.
+
+The in-memory implementation performs the same mutation while holding its write mutex.
+
+### `created_at`
+
+`created_at` is generated when a new domain `ShortLink` is created using `time.Now().UTC()`.
+
+The value is persisted in PostgreSQL as a timestamp with time zone.
+
+Using UTC provides one consistent representation independent of the machine or deployment timezone.
+
+When a persisted row is loaded, the stored creation time is mapped back into the domain object rather than generating a new timestamp.
+
+This means the original creation time survives application restarts.
+
+### Domain/database mapping
+
+The database model is intentionally separate from the domain `ShortLink`.
+
+The mapping is approximately:
+
+```text
+domain.Code          → model.Code
+domain.LongURL       → model.NormalizedURL
+hash(domain.LongURL) → model.URLHash
+domain.CreatedAt     → model.CreatedAt
+domain.UsedCount     → model.UsedCount
+```
+
+and the reverse mapping is performed when reading records.
+
+This keeps persistence-specific fields such as `URLHash` out of the domain model.
+
+### Tests
+
+Part 4 added integration and store-level tests covering:
+
+- PostgreSQL save and lookup.
+- lookup by code.
+- lookup by normalized URL.
+- URL idempotency.
+- short-code collision handling.
+- persisted usage count.
+- missing-record behavior.
+- persistence through creation of a new store instance using the same database.
+- direct MemoryStore behavior.
+- MemoryStore idempotency and collision handling.
+- MemoryStore usage-count behavior.
+
+The full project is also checked with:
+
+```bash
+go test ./...
+go vet ./...
+go test -race ./...
+```
+
+Coverage is generated with:
+
+```bash
+go test ./... -coverprofile=coverage
+go tool cover -func=coverage
+go tool cover -html=coverage -o coverage.html
+```
+
+Total statement coverage is above the required 70%.
+
+### Trade-offs
+
+The URL hash is an optimization and not the source of truth. Because it is truncated, collisions are expected to be possible, so the full normalized URL is always checked as well.
+
+`AutoMigrate` was chosen for simplicity in this project. Explicit migration files would be preferable as schema evolution becomes more complex.
+
+PostgreSQL integration tests currently require an available PostgreSQL test database. For a larger project I would isolate integration tests further, for example by using a dedicated disposable test database/container.
+
+### AI assistance
+
+AI assistance was used as a technical consultant for discussions around PostgreSQL/GORM integration, database indexing and hash trade-offs, context propagation, atomic usage-count updates, concurrency behavior, and debugging test/coverage issues.
+
+Implementation and project integration were performed and verified in the repository.
