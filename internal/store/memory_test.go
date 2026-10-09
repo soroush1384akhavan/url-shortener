@@ -105,7 +105,7 @@ func TestMemoryStoreIncrementUsedCount(t *testing.T) {
 		t.Fatalf("unexpected error saving link: %v", err)
 	}
 
-	err = st.IncrementUsedCount(ctx, sl.Code)
+	err = st.IncrementUsedCount(ctx, sl.Code, 1)
 	if err != nil {
 		t.Fatalf("unexpected error incrementing used count: %v", err)
 	}

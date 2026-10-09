@@ -11,5 +11,5 @@ type Store interface {
 	FindByURL(ctx context.Context, normalizedURL string) (*domain.ShortLink, error)
 	FindByCode(ctx context.Context, code string) (*domain.ShortLink, error)
 	SaveIfNotExist(ctx context.Context, sl *domain.ShortLink) (*domain.ShortLink, error)
-	IncrementUsedCount(ctx context.Context, code string) error
+	IncrementUsedCount(ctx context.Context, code string, amount uint64,) error
 }

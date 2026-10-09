@@ -58,9 +58,11 @@ func main() {
 	default:
 		log.Fatalf("unknown storage type: %s", *storageType)
 	}
+
 	service := link.NewShortenerService(vldt, st, gn)
 
-	handler := httpapi.NewHandler(service, *base)
+	counter := link.NewCounter(st, link.Config{FlushThreshold: 700, FlushInterval: 5 * time.Second})
+	handler := httpapi.NewHandler(service, *base, counter)
 
 	router := httpapi.NewRouter(handler)
 
@@ -97,6 +99,14 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 		return
+	}
+
+	if counter != nil {
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelClose()
+		if err := counter.Close(closeCtx); err != nil {
+			log.Printf("counter close: %v", err)
+		}
 	}
 	log.Println("server stopped")
 }

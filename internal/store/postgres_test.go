@@ -256,7 +256,7 @@ func TestPostgresStoreIncrementUsedCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error saving link: %v", err)
 	}
-	err = st.IncrementUsedCount(ctx, code)
+	err = st.IncrementUsedCount(ctx, code, 1)
 	if err != nil {
 		t.Fatalf("unexpected error incrementing used count: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestPostgresStoreIncrementUsedCountDBError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = st.IncrementUsedCount(ctx, "abc123")
+	err = st.IncrementUsedCount(ctx, "abc123", 1)
 
 	if err == nil {
 		t.Fatal("expected database error, got nil")
@@ -325,7 +325,7 @@ func TestPostgresStoreIncrementUsedCountNotFound(t *testing.T) {
 
 	code := fmt.Sprintf("missing-%d", time.Now().UnixNano())
 
-	err = st.IncrementUsedCount(ctx, code)
+	err = st.IncrementUsedCount(ctx, code, 1)
 
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)

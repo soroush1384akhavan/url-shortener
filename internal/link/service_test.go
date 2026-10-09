@@ -287,7 +287,7 @@ func (f *fakeGenerator) GenerateCode() (string, error) {
 		i = len(f.codes) - 1
 	}
 	f.calls++
-	fmt.Println(f.calls)
+	// fmt.Println(f.calls)
 	return f.codes[i], nil
 }
 
@@ -527,7 +527,7 @@ func (f *fakeStore) SaveIfNotExist(_ context.Context, sl *domain.ShortLink) (*do
 	return sl, nil
 }
 
-func (s *fakeStore) IncrementUsedCount(_ context.Context, code string) error {
+func (s *fakeStore) IncrementUsedCount(_ context.Context, code string, amount uint64) error {
 	return nil // fake just for interfaces
 }
 
@@ -585,7 +585,7 @@ func TestShortenerServiceIncrementUsedCount(t *testing.T) {
 		t.Fatalf("unexpected error saving link: %v", err)
 	}
 
-	err = svc.IncrementUsedCount(ctx, sl.Code)
+	err = svc.IncrementUsedCount(ctx, sl.Code, 1)
 	if err != nil {
 		t.Fatalf("unexpected error incrementing used count: %v", err)
 	}

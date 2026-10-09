@@ -84,11 +84,11 @@ func (s *PostgresStore) SaveIfNotExist(ctx context.Context, sl *domain.ShortLink
 	return m.toDomain(), nil
 }
 
-func (s *PostgresStore) IncrementUsedCount(ctx context.Context, code string) error {
+func (s *PostgresStore) IncrementUsedCount(ctx context.Context, code string, amount uint64) error {
 	res := s.db.WithContext(ctx).
 		Model(&ShortLinkModel{}).
 		Where("code = ?", code).
-		Update("used_count", gorm.Expr("used_count + 1")) // for being atomic in db
+		Update("used_count", gorm.Expr("used_count + ?", amount)) // for being atomic in db
 
 	if res.Error != nil {
 		return res.Error

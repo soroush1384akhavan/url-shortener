@@ -25,7 +25,7 @@ func newTestHandler() *Handler {
 		store.NewMemoryStore(),
 		shortcode.Base62Generator{},
 	)
-	return NewHandler(service, "http://localhost:8080")
+	return NewHandler(service, "http://localhost:8080", nil)
 }
 
 func TestShortenHandler(t *testing.T) {
@@ -94,7 +94,7 @@ func TestShortenHandlerInvalidMethod(t *testing.T) {
 		store.NewMemoryStore(),
 		shortcode.Base62Generator{},
 	)
-	h := NewHandler(service, "http://localhost:8080")
+	h := NewHandler(service, "http://localhost:8080", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/shorten", nil)
 	rec := httptest.NewRecorder()
@@ -174,7 +174,7 @@ type fakeService struct {
 	usedCount    int
 }
 
-func (s *fakeService) IncrementUsedCount(ctx context.Context, code string) error {
+func (s *fakeService) IncrementUsedCount(ctx context.Context, code string, amount uint64) error {
 	s.usedCount++
 	return nil // mock i
 
@@ -194,7 +194,7 @@ func (f *fakeService) GetByCode(_ context.Context, code string) (*domain.ShortLi
 func TestShortenHandlerInternalError(t *testing.T) {
 	fs := &fakeService{err: errors.New("internal error")}
 
-	h := NewHandler(fs, "http://localhost:8080")
+	h := NewHandler(fs, "http://localhost:8080", nil)
 
 	body := strings.NewReader(`{"url":"https://example.com"}`)
 
@@ -229,7 +229,7 @@ func (f *failingWriter) Write([]byte) (int, error) {
 
 func TestShortenHandlerEncodeError(t *testing.T) {
 	fs := &fakeService{link: domain.NewShortLink("abc123", "https://example.com/")}
-	h := NewHandler(fs, "http://localhost:8080")
+	h := NewHandler(fs, "http://localhost:8080", nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/shorten",
 		strings.NewReader(`{"url":"https://example.com"}`))
@@ -284,7 +284,7 @@ func TestRedirectHandler(t *testing.T) {
 	fs := &fakeService{
 		link: domain.NewShortLink("abc123", "https://example.com/"),
 	}
-	h := NewHandler(fs, "http://localhost:8080")
+	h := NewHandler(fs, "http://localhost:8080", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/abc123", nil)
 	req.SetPathValue("code", "abc123")
@@ -317,7 +317,7 @@ func TestRedirectHandlerErrors(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			fs := &fakeService{err: tc.err}
-			h := NewHandler(fs, "http://localhost:8080")
+			h := NewHandler(fs, "http://localhost:8080", nil)
 
 			req := httptest.NewRequest(tc.method, "/"+tc.code, nil)
 			req.SetPathValue("code", tc.code)
@@ -367,7 +367,7 @@ func TestGetMetadataSuccess(t *testing.T) {
 	sl.CreatedAt = createdAt
 
 	fs := &fakeService{link: sl}
-	h := NewHandler(fs, "http://localhost:8080")
+	h := NewHandler(fs, "http://localhost:8080", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/links/abc123", nil)
 	req.SetPathValue("code", "abc123")
@@ -426,7 +426,7 @@ func TestGetMetadataErrors(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			fs := &fakeService{err: tc.err}
-			h := NewHandler(fs, "http://localhost:8080")
+			h := NewHandler(fs, "http://localhost:8080", nil)
 
 			req := httptest.NewRequest(tc.method, "/api/v1/links/"+tc.code, nil)
 			req.SetPathValue("code", tc.code)
@@ -443,7 +443,7 @@ func TestGetMetadataErrors(t *testing.T) {
 
 func TestRouterGetMetadata(t *testing.T) {
 	sl := domain.NewShortLink("abc123", "https://example.com/")
-	h := NewHandler(&fakeService{link: sl}, "http://localhost:8080")
+	h := NewHandler(&fakeService{link: sl}, "http://localhost:8080", nil)
 	router := NewRouter(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/links/abc123", nil)

@@ -16,7 +16,7 @@ const maxAttempts = 20
 type Shortener interface {
 	Shorten(context.Context, string) (*domain.ShortLink, error)
 	GetByCode(context.Context, string) (*domain.ShortLink, error)
-	IncrementUsedCount(context.Context, string) error
+	IncrementUsedCount(context.Context, string, uint64) error
 }
 
 type ShortenerService struct {
@@ -90,8 +90,7 @@ func (s *ShortenerService) GetByCode(ctx context.Context, code string) (*domain.
 
 }
 
-func (s *ShortenerService) IncrementUsedCount(ctx context.Context, code string) error {
-	return s.Store.IncrementUsedCount(ctx, code)
+func (s *ShortenerService) IncrementUsedCount(ctx context.Context, code string, amount uint64) error {
+	return s.Store.IncrementUsedCount(ctx, code, amount)
 
 }
-

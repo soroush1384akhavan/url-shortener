@@ -62,7 +62,7 @@ func (s *MemoryStore) SaveIfNotExist(_ context.Context, shortLink *domain.ShortL
 	return shortLink, nil
 }
 
-func (s *MemoryStore) IncrementUsedCount(_ context.Context, code string) error {
+func (s *MemoryStore) IncrementUsedCount(_ context.Context, code string, amount uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,7 +71,7 @@ func (s *MemoryStore) IncrementUsedCount(_ context.Context, code string) error {
 		return apperr.ErrNotFound
 	}
 
-	lnk.UsedCount++
+	lnk.UsedCount += amount
 
 	return nil
 }

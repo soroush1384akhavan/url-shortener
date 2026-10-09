@@ -15,12 +15,14 @@ import (
 type Handler struct {
 	service link.Shortener
 	baseURL string
+	usage   link.UsageRecorder
 }
 
-func NewHandler(service link.Shortener, baseURL string) *Handler {
+func NewHandler(service link.Shortener, baseURL string, usage link.UsageRecorder) *Handler {
 	return &Handler{
 		service: service,
 		baseURL: strings.TrimRight(baseURL, "/"),
+		usage:   usage,
 	}
 }
 
@@ -119,10 +121,15 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	if err := h.service.IncrementUsedCount(ctx, code); err != nil {
-		log.Printf("increment used count failed: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+
+	// this ->
+	// h.usageCounter.Record(code)
+	// if err := h.service.IncrementUsedCount(ctx, code, 1); err != nil { // i know its to heavy but m going to fix this
+	// 	log.Printf("increment used count failed: %v", err) // best effort its not strict
+	// }
+
+	if h.usage != nil {
+		h.usage.Record(code)
 	}
 
 	http.Redirect(w, r, sl.LongURL, http.StatusFound)

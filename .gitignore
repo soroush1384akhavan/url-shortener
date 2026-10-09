@@ -1,0 +1,7 @@
+*.exe
+*.test
+*.out
+cpu*
+mem*
+coverage*
+with*

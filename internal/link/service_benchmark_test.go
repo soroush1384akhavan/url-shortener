@@ -37,7 +37,7 @@ func BenchmarkShortenExistingURL(b *testing.B) {
 
 	b.ReportAllocs()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		if _, err := s.Shorten(context.Background(), rawURL); err != nil {
 			b.Fatal(err)
 		}
@@ -74,7 +74,7 @@ func BenchmarkGetByCode(b *testing.B) {
 
 	b.ReportAllocs()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		if _, err := s.GetByCode(context.Background(), code); err != nil {
 			b.Fatal(err)
 		}

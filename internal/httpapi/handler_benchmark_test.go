@@ -12,12 +12,11 @@ func BenchmarkRedirect(b *testing.B) {
 	fs := &fakeService{
 		link: domain.NewShortLink("abc123", "https://example.com/"),
 	}
-	h := NewHandler(fs, "http://localhost:8080")
+	h := NewHandler(fs, "http://localhost:8080", nil)
 
 	b.ReportAllocs()
-	
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/abc123", nil)
 		req.SetPathValue("code", "abc123")
 		rec := httptest.NewRecorder()
