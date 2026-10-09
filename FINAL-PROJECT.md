@@ -215,11 +215,11 @@ One binary; measure before imagining clusters.
 
 | Done | Pts | Requirement |
 |:----:|:---:|-------------|
-| [ ] | 5 | Server timeouts configured |
-| [ ] | 5 | `Mutex` vs `RWMutex` matches behavior and `DECISIONS.md` |
-| [ ] | 5 | Benchmarks for shorten and redirect |
-| [ ] | 5 | README: benchmark line + profiling insight |
-| [ ] | 5 | Tests and `-race` still green |
+| [✅] | 5 | Server timeouts configured |
+| [✅] | 5 | `Mutex` vs `RWMutex` matches behavior and `DECISIONS.md` |
+| [✅] | 5 | Benchmarks for shorten and redirect |
+| [✅] | 5 | README: benchmark line + profiling insight |
+| [✅] | 5 | Tests and `-race` still green |
 
 ### Decisions you must document (Part 3)
 

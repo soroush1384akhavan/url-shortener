@@ -62,14 +62,3 @@ func (s *MemoryStore) SaveIfNotExist(shortLink *domain.ShortLink) (*domain.Short
 	s.urlLink[shortLink.LongURL] = shortLink
 	return shortLink, nil
 }
-
-// im not sure im going to use this or not (Probably not)
-func (s *MemoryStore) Save(shortLink *domain.ShortLink) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.codeLink[shortLink.Code] = shortLink
-	s.urlLink[shortLink.LongURL] = shortLink
-
-	return nil
-}

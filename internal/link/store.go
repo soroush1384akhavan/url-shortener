@@ -7,6 +7,6 @@ type Store interface {
 	FindByURL(string) (*domain.ShortLink, bool)
 	FindByCode(string) (*domain.ShortLink, bool)
 	SaveIfNotExist(*domain.ShortLink) (*domain.ShortLink, error)
-	Save(*domain.ShortLink) (error)
+	// Save(*domain.ShortLink) (error)
 }
 	

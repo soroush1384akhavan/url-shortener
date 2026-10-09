@@ -792,3 +792,652 @@ testable HTTP dependency injection
 ```
 
 This was a deliberate result of keeping Part 1 modular and avoiding unnecessary coupling between HTTP, business logic, storage, and domain types.
+
+
+
+
+# Design decisions
+
+## Part 3
+
+### Part 3 focus
+
+Part 3 focuses on production-oriented HTTP server behavior, concurrency choices, and performance measurement.
+
+A large part of the concurrency foundation was already implemented in Part 1:
+
+- `MemoryStore` already used `sync.RWMutex`
+- read operations already used `RLock`
+- write operations already used `Lock`
+- concurrent same-URL and different-URL tests already existed
+- `go test -race ./...` had already passed
+
+Because of that, Part 3 mainly added:
+
+- explicit HTTP server timeouts
+- benchmark coverage for read and write paths
+- parallel benchmark coverage
+- performance observations based on measured results
+
+### HTTP server timeouts
+
+Instead of relying only on the convenience form of `http.ListenAndServe`, the application now constructs an explicit `http.Server`.
+
+The configured values are:
+
+```text
+ReadHeaderTimeout: 2s
+ReadTimeout:       5s
+WriteTimeout:      5s
+IdleTimeout:       30s
+```
+
+The purpose of these settings is to prevent slow or idle clients from holding server resources indefinitely.
+
+`ReadHeaderTimeout` limits how long a client may take to send HTTP headers.
+
+`ReadTimeout` limits how long the server spends reading a request.
+
+`WriteTimeout` limits how long the server spends writing a response.
+
+`IdleTimeout` limits how long an idle keep-alive connection may remain open between requests.
+
+These timeouts are server-level transport settings rather than handler business logic.
+
+### Graceful shutdown
+
+While adding explicit `http.Server` configuration, graceful shutdown support was also introduced.
+
+The server runs in a goroutine while the main goroutine waits for either:
+
+```text
+server failure
+or
+SIGINT / SIGTERM
+```
+
+Shutdown signals are observed through `signal.NotifyContext`.
+
+When a shutdown signal is received, the application calls:
+
+```text
+server.Shutdown(...)
+```
+
+with a 10-second timeout context.
+
+This stops accepting new requests and gives active requests a limited window to complete before the process exits.
+
+`http.ErrServerClosed` is treated as an expected result of normal shutdown rather than as a server failure.
+
+Graceful shutdown is not the main Part 3 requirement, but it was added naturally while moving from `http.ListenAndServe` to an explicit `http.Server`.
+
+### Mutex choice
+
+The in-memory store uses:
+
+```go
+sync.RWMutex
+```
+
+instead of a plain `sync.Mutex`.
+
+The expected workload is strongly read-heavy:
+
+```text
+approximately 30,000 reads / second
+approximately 300 writes / second
+```
+
+or about a 100:1 read-to-write ratio.
+
+Read operations such as:
+
+```text
+FindByURL
+FindByCode
+```
+
+use `RLock` / `RUnlock`.
+
+Mutating operations use `Lock` / `Unlock`.
+
+The most important write operation, `SaveIfNotExist`, keeps the duplicate check, collision check, and insertion inside the same exclusive critical section.
+
+The reason for using `RWMutex` is that multiple readers can proceed concurrently while writes remain exclusive.
+
+This matches the expected access pattern, where redirect and lookup traffic is much more common than link creation.
+
+### Benchmark strategy
+
+Benchmarks were added in the `link` package to measure the main service paths.
+
+The benchmark set currently includes:
+
+```text
+BenchmarkShortenNewURL
+BenchmarkShortenExistingURL
+BenchmarkShortenParallel
+BenchmarkGetByCode
+BenchmarkGetByCodeParallel
+```
+
+Each benchmark measures a different behavior.
+
+`BenchmarkShortenNewURL` measures the full create path for a new URL, including validation, normalization, random code generation, and insertion.
+
+`BenchmarkShortenExistingURL` measures the idempotent fast path where the normalized URL is already present.
+
+`BenchmarkShortenParallel` measures concurrent creation of new URLs and exposes write-lock contention and concurrent service overhead.
+
+`BenchmarkGetByCode` measures the sequential read path used for code lookup.
+
+`BenchmarkGetByCodeParallel` measures concurrent read lookup and helps evaluate the effect of `RWMutex` under a read-heavy workload.
+
+Benchmarks report both execution time and allocations.
+
+### Benchmark environment
+
+The first benchmark run was measured on:
+
+```text
+OS:   Windows
+Arch: amd64
+CPU:  12th Gen Intel(R) Core(TM) i7-12700H
+```
+
+The benchmark command was:
+
+```text
+go test '-bench=.' -benchmem '-run=^$' ./internal/link
+```
+
+Absolute benchmark numbers depend on CPU, operating system, Go version, scheduler behavior, and current machine load.
+
+The main value of the results is therefore the relative behavior between paths rather than treating the raw nanosecond values as universal production latency.
+
+### Benchmark results
+
+The measured results were:
+
+```text
+BenchmarkShortenNewURL-20
+645469 iterations
+1987 ns/op
+909 B/op
+26 allocs/op
+
+BenchmarkShortenExistingURL-20
+2838927 iterations
+416.4 ns/op
+336 B/op
+3 allocs/op
+
+BenchmarkShortenParallel-20
+554614 iterations
+2561 ns/op
+1004 B/op
+28 allocs/op
+
+BenchmarkGetByCode-20
+81780079 iterations
+13.08 ns/op
+0 B/op
+0 allocs/op
+
+BenchmarkGetByCodeParallel-20
+24400410 iterations
+48.08 ns/op
+0 B/op
+0 allocs/op
+```
+
+### Performance observations
+
+The most important observation is that the read path is substantially cheaper than the write path.
+
+`GetByCode` completed in approximately:
+
+```text
+13.08 ns/op
+```
+
+with:
+
+```text
+0 B/op
+0 allocs/op
+```
+
+in the sequential benchmark.
+
+This is a strong result for the expected redirect hot path because code lookup does not allocate memory in the measured in-memory implementation.
+
+The parallel read benchmark completed in approximately:
+
+```text
+48.08 ns/op
+```
+
+with the same:
+
+```text
+0 B/op
+0 allocs/op
+```
+
+The concurrent version is slower than the sequential version, which is expected because of synchronization and goroutine scheduling overhead.
+
+However, concurrent lookup remains much cheaper than any shortening path.
+
+This supports the choice of `RWMutex` for the current read-heavy in-memory design.
+
+### New URL creation cost
+
+Creating a new short link measured approximately:
+
+```text
+1987 ns/op
+909 B/op
+26 allocs/op
+```
+
+This path performs more work than lookup:
+
+```text
+validation
+normalization
+FindByURL
+random Base62 generation
+ShortLink creation
+collision-safe insertion
+```
+
+Therefore a higher cost and additional allocations are expected.
+
+This is acceptable for the assumed workload because new link creation is expected to be much less frequent than redirects.
+
+### Existing URL fast path
+
+Shortening an already-known URL measured approximately:
+
+```text
+416.4 ns/op
+336 B/op
+3 allocs/op
+```
+
+This is much cheaper than shortening a new URL.
+
+The difference confirms that idempotency provides a useful fast path:
+
+```text
+validate
+normalize
+FindByURL
+return existing ShortLink
+```
+
+The generator and write path are skipped.
+
+This also supports the Part 1 decision to maintain a direct normalized-URL index instead of scanning stored links.
+
+### Parallel write behavior
+
+Parallel new-URL shortening measured approximately:
+
+```text
+2561 ns/op
+1004 B/op
+28 allocs/op
+```
+
+This is slower than the sequential new-URL path.
+
+That is expected because writes eventually require an exclusive lock in `SaveIfNotExist`.
+
+With concurrent writers, lock contention and goroutine scheduling add overhead.
+
+This behavior is acceptable for the assumed workload because writes are expected to be only a small fraction of total traffic.
+
+The result also reinforces the design goal of keeping the redirect/read path independent from write-heavy operations.
+
+### Read-heavy workload conclusion
+
+The benchmark results are consistent with the workload assumptions documented earlier.
+
+The system is expected to handle far more reads than writes.
+
+The current in-memory design gives the read path these useful properties:
+
+```text
+direct map lookup
+shared read locking
+zero measured allocations
+very low per-operation cost
+```
+
+The write path is more expensive but occurs much less frequently.
+
+This makes `RWMutex` a reasonable choice for the current architecture.
+
+### Future impact of persistent storage
+
+The current benchmark results are for the in-memory implementation.
+
+They should not be interpreted as final production latency after Part 4 introduces persistent storage.
+
+Once database access is added, the read path will be dominated more by storage and network latency than by Go map lookup.
+
+This is one reason a future cache for hot:
+
+```text
+code -> longURL
+```
+
+mappings is planned.
+
+The benchmark still provides a useful baseline because it measures the application-level service and synchronization overhead before database I/O is introduced.
+
+### AI assistance
+
+AI was used as a consultant to explain Go benchmark structure and the `testing.B.RunParallel` / `testing.PB` API.
+
+The benchmark implementation was written and integrated manually.
+
+This assistance should be mentioned because `RunParallel` was a Go testing API that was not previously familiar during implementation.
+
+### Current Part 3 status
+
+Completed so far:
+
+```text
+explicit http.Server configuration
+ReadHeaderTimeout
+ReadTimeout
+WriteTimeout
+IdleTimeout
+graceful shutdown
+RWMutex design already in place
+sequential shorten benchmarks
+existing-URL benchmark
+sequential code lookup benchmark
+parallel shorten benchmark
+parallel code lookup benchmark
+benchmark allocation reporting
+initial performance analysis
+```
+
+Remaining Part 3 work:
+
+```text
+run the benchmark suite on WSL/Linux for an additional baseline
+perform the required profiling step and record at least one profiling observation
+run final go test ./...
+run final go vet ./...
+run final go test -race ./...
+```
+
+# Part 3 — Performance & Measurement
+
+## Scope
+
+Part 3 focuses on measuring and hardening the current single-process, in-memory implementation before introducing persistent storage.
+
+The main goals were:
+
+- configure explicit HTTP server timeouts
+- justify the locking strategy
+- benchmark shorten and redirect/read paths
+- profile CPU and memory behavior
+- document whether an in-memory capacity/eviction policy should exist
+
+---
+
+## Locking choice
+
+The in-memory store uses `sync.RWMutex`.
+
+The expected workload is strongly read-heavy. I assume approximately:
+
+- 30,000 redirect/read requests per second
+- 300 shorten/write requests per second
+- roughly a 100:1 read-to-write ratio
+
+Redirects and metadata lookups only need to read existing mappings, while shortening a new URL may update both the code index and the normalized-URL index.
+
+`FindByCode` and `FindByURL` therefore use `RLock`, which allows multiple concurrent readers.
+
+`SaveIfNotExist` uses the exclusive `Lock`. The idempotency check, collision check, and insertion are kept inside the same exclusive critical section so concurrent requests cannot create inconsistent mappings.
+
+I chose `RWMutex` instead of a plain `Mutex` because reads are expected to dominate writes.
+
+The benchmark and profiling results support this choice: the read path is extremely cheap, while most of the create-path cost comes from URL processing, random code generation, allocation, and map work rather than lock overhead.
+
+---
+
+## Server timeouts
+
+The HTTP server is configured explicitly with:
+
+```text
+ReadHeaderTimeout: 2s
+ReadTimeout:       5s
+WriteTimeout:      5s
+IdleTimeout:       30s
+```
+
+### `ReadHeaderTimeout`
+
+Limits how long a client may take to send request headers.
+
+This protects the server from clients that slowly send headers and keep connections occupied unnecessarily.
+
+### `ReadTimeout`
+
+Limits how long the server may spend reading the full request, including its body.
+
+The API only accepts small JSON requests, so a request that needs several seconds to arrive is considered abnormally slow.
+
+### `WriteTimeout`
+
+Limits how long the server may spend writing a response.
+
+Responses from this service are small JSON payloads or redirects, so normal responses should finish well below this value.
+
+### `IdleTimeout`
+
+Limits how long an HTTP keep-alive connection may stay idle between requests.
+
+A client that exceeds the configured timeout may have its connection terminated instead of being allowed to consume server resources indefinitely.
+
+---
+
+## Graceful shutdown
+
+While moving from `http.ListenAndServe` to an explicit `http.Server`, graceful shutdown was also added.
+
+The process listens for `SIGINT` and `SIGTERM` using `signal.NotifyContext`.
+
+When shutdown is requested, the server stops accepting new connections and calls `Server.Shutdown` with a 10-second timeout so in-flight requests have a chance to finish.
+
+Graceful shutdown is not required for the core Part 3 performance requirement, but it fits naturally with the explicit `http.Server` setup and improves production behavior.
+
+---
+
+## Benchmarks
+
+Benchmarks were added for both shortening and redirect/read paths.
+
+Example results from Windows/amd64:
+
+```text
+BenchmarkShortenNewURL-20          645469      1987 ns/op      909 B/op     26 allocs/op
+BenchmarkShortenExistingURL-20    2838927       416.4 ns/op    336 B/op      3 allocs/op
+BenchmarkShortenParallel-20         554614      2561 ns/op     1004 B/op     28 allocs/op
+BenchmarkGetByCode-20             81780079        13.08 ns/op     0 B/op      0 allocs/op
+BenchmarkGetByCodeParallel-20     24400410        48.08 ns/op     0 B/op      0 allocs/op
+BenchmarkRedirect-20                563094      1834 ns/op     6691 B/op     24 allocs/op
+```
+
+Absolute benchmark values depend on hardware, operating system, Go version, and background system load, so the main value of the benchmarks is the relative comparison between paths.
+
+### Benchmark observations
+
+- Existing-URL shortening is much cheaper than shortening a new URL.
+- This is expected because idempotency allows the service to return the existing mapping without generating or storing a new code.
+- `GetByCode` is extremely cheap in the current in-memory implementation and performs zero allocations in the measured benchmark.
+- Parallel reads remain cheap despite synchronization overhead.
+- Parallel creation is slower because writers need exclusive access to the store.
+- The HTTP redirect benchmark is much more expensive than the raw store lookup because it includes handler work and `httptest` request/response allocation.
+- Therefore the redirect benchmark should not be interpreted as pure store lookup cost.
+
+---
+
+## CPU profiling
+
+CPU profiling was performed against `BenchmarkShortenNewURL`.
+
+The most notable application-level cumulative CPU costs were approximately:
+
+```text
+Base62Generator.GenerateCode     ~27.5%
+MemoryStore.SaveIfNotExist       ~20.6%
+net/url.Parse                    ~11.9%
+NormalizeURL                     ~11.3%
+MemoryStore.FindByURL             ~7.5%
+```
+
+A significant portion of the code-generation cost comes from `crypto/rand.Int`, because public short codes are generated using cryptographically secure randomness.
+
+The profile also showed runtime and garbage-collection work, which is consistent with the allocation-heavy nature of creating new records.
+
+An important observation is that synchronization itself was not the dominant CPU cost.
+
+The main create-path costs were:
+
+- cryptographic random generation
+- URL parsing and normalization
+- map lookup, insertion, hashing, and growth
+- memory allocation and garbage collection
+
+This means there is currently no evidence that redesigning or removing the `RWMutex` would provide the most valuable optimization.
+
+---
+
+## Memory profiling
+
+Memory profiling was also performed against `BenchmarkShortenNewURL`.
+
+### Allocation profile
+
+The `alloc_space` profile showed roughly 593 MB of cumulative allocations during the benchmark run.
+
+The largest allocation sources were approximately:
+
+```text
+net/url.parse                         ~28.2%
+crypto/rand.Int                       ~24.1%
+MemoryStore.SaveIfNotExist            ~18.9%
+math/big.nat.make                     ~10.5%
+domain.NewShortLink                    ~5.2%
+fmt.Sprintf                            ~4.1%
+```
+
+This indicates that allocation pressure in the create path mainly comes from:
+
+- URL parsing
+- cryptographic random-number generation
+- growing/updating the in-memory maps
+- creating `ShortLink` values
+- generating unique benchmark URLs
+
+`fmt.Sprintf` is partly benchmark overhead because the benchmark intentionally creates a different URL for each iteration.
+
+The allocation attributed to `SaveIfNotExist` is also expected because `BenchmarkShortenNewURL` continuously grows the in-memory dataset.
+
+This behavior does not by itself indicate a memory leak.
+
+### In-use heap profile
+
+The `inuse_space` snapshot was mostly dominated by Go runtime allocations and was less useful for understanding application-owned data.
+
+The final snapshot showed only a few megabytes of live memory, mostly associated with runtime thread/goroutine infrastructure and time-zone initialization.
+
+By the time the profile snapshot was captured, benchmark-owned service/store objects were no longer necessarily reachable, so garbage collection could reclaim them.
+
+For this benchmark, `alloc_space` was therefore more useful than `inuse_space` for understanding where the application allocates memory.
+
+---
+
+## Profiling conclusion
+
+The benchmark and profiling results are consistent.
+
+The read path is extremely cheap in the current in-memory implementation.
+
+The new-link creation path is more expensive because it performs:
+
+- validation
+- normalization
+- cryptographic code generation
+- memory allocation
+- map lookup and insertion
+- collision-safe synchronized writes
+
+Given the expected read-heavy workload, further optimization of the less-frequent create path is not currently a priority.
+
+When persistent storage is introduced, database and network latency are expected to dominate these in-memory micro-costs. Future optimization should therefore be based on profiling the persistent implementation instead of prematurely optimizing the current memory-only version.
+
+---
+
+## In-memory capacity and eviction
+
+No maximum in-memory link count or eviction policy is implemented.
+
+At this stage, the in-memory store is the authoritative source of truth.
+
+Evicting an entry would therefore mean losing that mapping while the process is still running.
+
+More importantly, eviction could break the idempotency guarantee:
+
+```text
+same normalized URL -> same short code
+```
+
+If a mapping were removed and the same URL were shortened again, the service could generate a different code.
+
+For that reason, I chose not to implement FIFO, LRU, TTL, or another eviction policy while memory is the only storage layer.
+
+Capacity management can be reconsidered after persistent storage is introduced. At that point, durable storage can remain authoritative while memory can be used as a disposable cache.
+
+---
+
+## Verification
+
+Part 3 should be considered complete only while the following remain green:
+
+```bash
+go test ./...
+go vet ./...
+go test -race ./...
+go test -bench=. -benchmem ./...
+```
+
+The race test is especially important because the store is accessed concurrently and correctness depends on the locking strategy.
+
+---
+
+## AI assistance
+
+AI was used only as a consultant for understanding benchmark and profiling concepts.
+
+Specifically, I asked for clarification about:
+
+- the syntax and purpose of `b.RunParallel`
+- CPU profiling with `-cpuprofile`
+- `go tool pprof`
+- `alloc_space` vs `inuse_space`
+- interpretation of profiling output
+
+The benchmark and application code were written and integrated manually.

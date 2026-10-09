@@ -1,32 +1,15 @@
 package main
 
-// import (
-// 	"fmt"
-
-// 	"github.com/soroush1384akhavan/url-shortener/internal/link"
-// 	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
-// 	"github.com/soroush1384akhavan/url-shortener/internal/store"
-// )
-
-// func main(){
-// 	validator := link.URLValidator{}
-// 	st := store.NewMemoryStore()
-// 	gn := shortcode.Base62Generator{}
-// 	shortener := link.NewShortenerService(validator, st, gn)
-// 	lnk, err := shortener.Shorten("https://example.com")
-// 	if err != nil {
-// 		fmt.Println(err)
-// 	}
-
-// 	lnk, exists := shortener.Store.FindByURL("hTtps://example.com")
-
-// 	fmt.Println(lnk, exists)
-// }
-
 import (
+	"context"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	_ "github.com/soroush1384akhavan/url-shortener/docs"
 	"github.com/soroush1384akhavan/url-shortener/internal/httpapi"
@@ -56,9 +39,39 @@ func main() {
 
 	router := httpapi.NewRouter(handler)
 
-	log.Println("server listening on :", *addr)
-
-	if err := http.ListenAndServe(*addr, router); err != nil {
-		log.Fatal(err)
+	server := &http.Server{
+		Addr:              *addr,
+		Handler:           router,
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("server listening on %s", *addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		log.Fatalf("server failed: %v", err)
+	case <-ctx.Done():
+		log.Println("shutting down...")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+		return
+	}
+	log.Println("server stopped")
 }

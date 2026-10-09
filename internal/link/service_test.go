@@ -307,7 +307,7 @@ func TestShortenFakeGenerator(t *testing.T) {
 	t.Run("retries after collision and succeeds", func(t *testing.T) {
 		st := store.NewMemoryStore()
 
-		st.Save(domain.NewShortLink("abc", "https://ex.com/"))
+		st.SaveIfNotExist(domain.NewShortLink("abc", "https://ex.com/"))
 
 		gn := &fakeGenerator{codes: []string{"abc", "xyz"}}
 		s := NewShortenerService(URLValidator{}, st, gn)
@@ -324,7 +324,7 @@ func TestShortenFakeGenerator(t *testing.T) {
 
 	t.Run("exhausted attempts", func(t *testing.T) {
 		st := store.NewMemoryStore()
-		st.Save(domain.NewShortLink("abc", "https://ex.com/"))
+		st.SaveIfNotExist(domain.NewShortLink("abc", "https://ex.com/"))
 
 		gn := &fakeGenerator{codes: []string{"abc"}}
 		s := NewShortenerService(URLValidator{}, st, gn)
@@ -465,5 +465,76 @@ func TestConcurrentShortenDifferentURLs(t *testing.T) {
 		if lnk.LongURL != normalized {
 			t.Errorf("worker %d: code %q -> %q, want %q", i, c, lnk.LongURL, urls[i])
 		}
+	}
+}
+
+// fake store
+
+type fakeStore struct {
+	byURL    *domain.ShortLink
+	byCode   *domain.ShortLink
+	saveLink *domain.ShortLink
+	saveErr  error
+
+	gotURL string
+}
+
+func (f *fakeStore) FindByURL(u string) (*domain.ShortLink, bool) {
+	f.gotURL = u
+	return f.byURL, f.byURL != nil
+}
+
+func (f *fakeStore) FindByCode(code string) (*domain.ShortLink, bool) {
+	return f.byCode, f.byCode != nil
+}
+
+func (f *fakeStore) SaveIfNotExist(sl *domain.ShortLink) (*domain.ShortLink, error) {
+	if f.saveErr != nil {
+		return nil, f.saveErr
+	}
+	if f.saveLink != nil {
+		return f.saveLink, nil
+	}
+	return sl, nil
+}
+
+func TestShortenExistingURLSkipsGenerator(t *testing.T) {
+	existing := domain.NewShortLink("old123", "https://example.com/page")
+	fs := &fakeStore{byURL: existing}
+	gn := &fakeGenerator{codes: []string{"new456"}}
+
+	s := NewShortenerService(&fakeValidator{}, fs, gn)
+
+	got, err := s.Shorten("HTTPS://Example.com:443/page#frag")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != existing {
+		t.Errorf("got %+v, want the existing link %+v", got, existing)
+	}
+	if gn.calls != 0 {
+		t.Errorf("generator calls = %d, want 0", gn.calls)
+	}
+
+	if fs.gotURL != "https://example.com/page" {
+		t.Errorf("store lookup used %q, want normalized URL", fs.gotURL)
+	}
+}
+
+func TestShortenStoreErrorIsPropagated(t *testing.T) {
+	storeErr := errors.New("db down")
+	fs := &fakeStore{saveErr: storeErr}
+	gn := &fakeGenerator{codes: []string{"abc123"}}
+
+	s := NewShortenerService(&fakeValidator{}, fs, gn)
+
+	got, err := s.Shorten("https://example.com/page")
+
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("err = %v, want %v", err, storeErr)
+	}
+	if got != nil {
+		t.Errorf("got = %+v, want nil", got)
 	}
 }
