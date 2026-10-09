@@ -1,26 +1,39 @@
 package link
 
 import (
-
+	"context"
+	"errors"
 
 	// "github.com/soroush1384akhavan/url-shortener/internal/store"
-	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
 
+	"github.com/soroush1384akhavan/url-shortener/internal/apperr"
+	"github.com/soroush1384akhavan/url-shortener/internal/domain"
+	"github.com/soroush1384akhavan/url-shortener/internal/shortcode"
 )
+
+const maxAttempts = 20
+
+type Shortener interface {
+	Shorten(context.Context, string) (*domain.ShortLink, error)
+	GetByCode(context.Context, string) (*domain.ShortLink, error)
+	IncrementUsedCount(context.Context, string) error
+}
 
 type ShortenerService struct {
 	Validator Validator
-	Store Store
+	Store     Store
+	Generator shortcode.Generator
 }
 
-func NewShortenerService(validator Validator, st Store) (*ShortenerService, error) {
+func NewShortenerService(vld Validator, st Store, gn shortcode.Generator) *ShortenerService {
 	return &ShortenerService{
-		Validator: validator,
-		Store: st,
-	}, nil
+		Validator: vld,
+		Store:     st,
+		Generator: gn,
+	}
 }
 
-func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
+func (s *ShortenerService) Shorten(ctx context.Context, rawURL string) (*domain.ShortLink, error) {
 	// validate
 	if err := s.Validator.Validate(rawURL); err != nil {
 		return nil, err
@@ -31,28 +44,54 @@ func (s *ShortenerService) Shorten(rawURL string) (*ShortLink, error) {
 	if err != nil {
 		return nil, err
 	}
-	
 
 	// check if URL already exists
-	code, ok := s.Store.FindByURL(normalizedURL)
-
-	if ok{
-		link := NewShortLink(code, normalizedURL)
-
-		return link, nil
+	lnk, err := s.Store.FindByURL(ctx, normalizedURL)
+	switch {
+	case err == nil:
+		return lnk, nil
+	case errors.Is(err, apperr.ErrNotFound):
+		// its new do nothing
+	default:
+		return nil, err
 	}
 
-	// generate code
-	code, genErr := shortcode.CodeGenerator(normalizedURL)
-	if genErr != nil{
-		return nil, genErr
+	// generate code and collision handling
+	for i := 0; i < maxAttempts; i++ {
+		code, err := s.Generator.GenerateCode()
+		if err != nil {
+			return nil, err
+		}
+
+		lnk, err := s.Store.SaveIfNotExist(ctx, domain.NewShortLink(code, normalizedURL))
+		if errors.Is(err, apperr.ErrCodeCollision) {
+			continue
+		}
+
+		return lnk, err
 	}
 
-	// 5. check collision
-
-	// 6. create ShortLink
-
-	// 7. save
-
-	// 8. return
+	return nil, ErrCodeGenerationExhausted
 }
+
+func (s *ShortenerService) GetByCode(ctx context.Context, code string) (*domain.ShortLink, error) {
+
+	ShortLink, err := s.Store.FindByCode(ctx, code)
+
+	switch {
+	case err == nil:
+		return ShortLink, nil
+	case errors.Is(err, apperr.ErrNotFound):
+		return nil, apperr.ErrNotFound
+
+	default:
+		return nil, err
+	}
+
+}
+
+func (s *ShortenerService) IncrementUsedCount(ctx context.Context, code string) error {
+	return s.Store.IncrementUsedCount(ctx, code)
+
+}
+
